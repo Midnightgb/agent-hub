@@ -120,6 +120,55 @@ export async function waitExecution(handleOrJobId, { timeoutS = 60, pollInterval
   }
 }
 
+/**
+ * same-tree-fanout (S6): start the `parallelWith` reviewer(s) of the chain
+ * step that actually ran, next to the primary job. Only read mode fans out
+ * (a write would need its own worktree and lock) and never a host-only agent
+ * (claude). Each gets its own dispatchKey; a failure to start one is reported
+ * on its entry and never affects the primary job.
+ */
+async function startParallelReviewers({ candidate, primaryJob, task, cwd, taskType, timeoutS, workflowStep, workflowId, label, rootExecutionId, parentExecutionId, isolation, output, env, startJobFn }) {
+  const declared = candidate?.parallelWith
+  if (!declared) return []
+  if (primaryJob?.status === 'failed') return []
+  const pairs = Array.isArray(declared) ? declared : [declared]
+  const jobs = []
+  for (const pair of pairs) {
+    const entry = { jobId: null, agent: pair.agent, model: pair.model, status: null, errorKind: null }
+    const mode = pair.mode ?? 'read'
+    if (mode !== 'read') {
+      jobs.push({ ...entry, skipped: 'write mode is never fanned out' })
+      continue
+    }
+    if (pair.agent === 'claude') {
+      jobs.push({ ...entry, skipped: 'claude is host-only; run it as a Claude Code subagent' })
+      continue
+    }
+    try {
+      const started = await startJobFn({
+        agent: pair.agent,
+        model: pair.model,
+        task,
+        cwd,
+        mode,
+        timeoutS,
+        taskType,
+        dispatchKey: computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId, label: `${label ?? ''}#parallel:${pair.agent}/${pair.model}` }),
+        rootExecutionId,
+        parentExecutionId,
+        env,
+        ...(isolation ? { isolation } : {}),
+        ...(output ? { output } : {}),
+      })
+      const job = started?.job ?? started
+      jobs.push({ ...entry, jobId: job?.jobId ?? null, status: job?.status ?? null, errorKind: job?.errorKind ?? null })
+    } catch (error) {
+      jobs.push({ ...entry, status: 'failed', errorKind: 'start_failed', error: String(error?.message ?? error) })
+    }
+  }
+  return jobs
+}
+
 /** Default window for deduplicating recent dispatches: 10 minutes */
 export const DISPATCH_WINDOW_MS = 10 * 60 * 1000
 
@@ -144,9 +193,13 @@ const recentDispatches = new Map()
  * reusing another run's terminal record and "succeeding" in 0s). Omitted
  * workflowId keeps the exact legacy hash (backward compatible).
  */
-export function computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId = null } = {}) {
+export function computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId = null, label = null } = {}) {
   const hash = crypto.createHash('sha256')
   hash.update(`${task ?? ''}${cwd ?? ''}${taskType ?? ''}${workflowStep ?? ''}${workflowId ?? ''}`)
+  // same-tree-fanout (S4): a per-call label lets N identical reviewer
+  // dispatches fan out instead of collapsing into one job. Separated by a NUL
+  // so it can never collide with a task/cwd suffix; omitted keeps the legacy hash.
+  if (label != null && label !== '') hash.update(`\0label:${label}`)
   return hash.digest('hex')
 }
 
@@ -378,6 +431,17 @@ export async function dispatch({
   rootExecutionId = null,
   timeoutS,
   category = null,
+  // same-tree-fanout (S2): read-job isolation forwarded to startJob
+  // ('auto' | 'in-place' | 'scratch'); undefined keeps startJob's default.
+  isolation = undefined,
+  // same-tree-fanout (S4): distinguishes otherwise-identical fan-out calls in
+  // the derived dispatchKey (ignored when an explicit dispatchKey is given).
+  label = null,
+  // same-tree-fanout (S5): forwarded to startJob for every job this dispatch starts.
+  output = undefined,
+  // same-tree-fanout (S6): also start the read-only parallelWith reviewer(s)
+  // declared on the launched chain step; returned as parallelJobs.
+  fanout = false,
   env = process.env,
   // Harness wait contract: waitMode 'none' returns at create/start,
   // 'attention' observes until terminal OR waiting/attention, 'terminal'
@@ -443,7 +507,7 @@ export async function dispatch({
 
   const profileMemo = new Map()
   const resolvedWorkflowId = workflowId ?? restDeps.workflowId ?? restDeps.workflow_id ?? null
-  const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId })
+  const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId, label })
   // Harness profile + effective wait contract, resolved once per dispatch.
   // An explicit waitMode always wins over every profile default.
   const harnessProfile = resolveHarness({ explicit: harness, env, clientHint })
@@ -932,6 +996,8 @@ export async function dispatch({
           env,
           ...restDeps,
           verify,
+          ...(isolation ? { isolation } : {}),
+          ...(output ? { output } : {}),
           profile,
           profileStatus,
           // Resolved contract always wins over caller extras.
@@ -968,12 +1034,16 @@ export async function dispatch({
 
     const finalSessionId =
       execResult?.sessionId ?? finalJob?.sessionId ?? finalJob?.remote?.sessionId ?? resolvedSessionId ?? null
+    const parallelJobs = fanout
+      ? await startParallelReviewers({ candidate: finalCandidate, primaryJob: finalJob, task, cwd, taskType, timeoutS, workflowStep, workflowId: resolvedWorkflowId, label, rootExecutionId: rootExecutionId ?? execId, parentExecutionId: execId, isolation, output, env, startJobFn })
+      : null
     return withHandle({
       job: finalJob,
       dispatchKey: key,
       executionId: execId,
       candidate: finalCandidate,
       sessionId: finalSessionId,
+      ...(parallelJobs ? { parallelJobs } : {}),
     }, finalCandidate)
   } finally {
     if (reservationToken && !reservationAdopted) {

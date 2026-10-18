@@ -3,6 +3,10 @@ import { parseJsonl } from './base.mjs'
 export const id = 'codex'
 export const cmd = 'codex'
 
+// same-tree-fanout (S1): read mode runs under codex's read-only sandbox, so a
+// read job may run in the caller's tree.
+export const readPolicy = 'enforced'
+
 /**
  * Argv only, never a shell — the prompt is one argv element. `codex exec`
  * reads additional input from stdin and BLOCKS FOREVER when it is left open

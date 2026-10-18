@@ -1,6 +1,10 @@
 import { extractLastJsonLine, parseJsonl } from './base.mjs'
 
 export const id = 'agy'
+
+// same-tree-fanout (S2): `--mode plan` is known to write anyway, so read jobs
+// run in a hub-managed scratch copy of the caller's tree (src/scratchcopy.mjs).
+export const readPolicy = 'scratch'
 export const cmd = 'agy'
 
 /**

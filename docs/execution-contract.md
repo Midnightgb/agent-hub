@@ -59,6 +59,8 @@ target state for later slices); file:line refs ground what already exists.
 
 - `dispatchKey = sha256(task + cwd + taskType + workflowStep)`; re-dispatch
   with the same key MUST return the existing job, never spawn a duplicate.
+  An optional per-call `label` joins the hash, so a deliberate fan-out of
+  identical tasks gets one job per label; no label keeps the legacy hash.
 - Identity chain: `executionId` (this attempt), `attempt` (n of N),
   `parentExecutionId` (retry/resume parent), `rootExecutionId` (first cause).
   `jobstore.createJob` persists all four alongside `parentJobId/sessionId`
@@ -72,11 +74,16 @@ target state for later slices); file:line refs ground what already exists.
 
 ## 5. Read purity / write ownership
 
-- Read purity: snapshot AFTER gate+lock, diff at terminal transition; a
-  modifying `read` job fails as `read_mode_violation` (output kept for
-  inspection), non-git cwd = `unverifiable`, never a violation
-  (`src/jobrunner.mjs` `takeSnapshotFn` / `diffSnapshotsFn`,
-  `src/readguard.mjs` `takeSnapshot`). `.env` / `JULES_API_KEY` never reach child
+- Read purity: snapshot AFTER gate+lock, diff at terminal transition; the
+  guard level comes from the adapter's `readPolicy` (`src/scratchcopy.mjs`
+  `resolveReadIsolation`). With the `strict` guard a modifying `read` job fails
+  as `read_mode_violation` (output kept for inspection); with `warn`
+  (enforced-read CLIs, or agy in its scratch copy) the change is recorded as
+  `readGuard` and a warning. A scratch-policy job (agy) runs in a hub-owned
+  shared clone with its own refs/config; only an absolute-path write into
+  the caller's tree escapes it, and the warn guard reports it. Non-git cwd =
+  `unverifiable`, never a violation (`src/jobrunner.mjs` `takeSnapshotFn` /
+  `diffSnapshotsFn`, `src/readguard.mjs` `takeSnapshot`). `.env` / `JULES_API_KEY` never reach child
   CLIs (`src/sandbox.mjs` env filtering).
 - Write ownership: `mode:write` requires secondary `git worktree add`
   checkout or allowlist (`src/worktree.mjs` `checkWriteAllowed`); single-writer lock per

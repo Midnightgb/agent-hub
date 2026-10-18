@@ -1,6 +1,10 @@
 import { parseJsonl } from './base.mjs'
 
 export const id = 'copilot'
+
+// same-tree-fanout (S1): read mode passes --deny-tool=write/shell, so the CLI
+// itself enforces read-only and a read job may run in the caller's tree.
+export const readPolicy = 'enforced'
 export const cmd = 'copilot'
 
 /**

@@ -32,6 +32,7 @@ import {
   DelegateResponse,
   DispatchResponse,
   JobRecord,
+  JobWaitResponse,
   JobResultResponse,
   VerifyCheckInput,
   MetricsResponse,
@@ -141,6 +142,18 @@ const guard = (handler, wrap = (payload) => payload) => async (args, extra) => {
 
 const agentEnum = z.enum(['agy', 'opencode', 'copilot', 'codex'])
 const modeEnum = z.enum(['read', 'write'])
+// same-tree-fanout (S5): structured review output; see src/review-output.mjs.
+const outputArg = z
+  .enum(['review'])
+  .optional()
+  .describe('review: the hub asks the agent to end with a JSON block {summary, findings[{severity, file, line, title, detail}]}; job_result returns it parsed as review (or reviewError). The job never fails on a bad block.')
+// same-tree-fanout (S2): read-job isolation; see src/scratchcopy.mjs.
+const isolationArg = z
+  .enum(['auto', 'in-place', 'scratch'])
+  .optional()
+  .describe(
+    'Read jobs only. auto (default): agy runs in a hub-managed scratch copy of your tree (writes discarded, removed after the job); copilot/codex/opencode run in place with a warn-level read guard. in-place: run in your tree (strict guard for agy). scratch: always use a scratch copy.'
+  )
 const waitModeEnum = z.enum(['none', 'attention', 'terminal'])
 const harnessEnum = z.enum(['generic', 'claude-code', 'opencode'])
 const jobIdArg = z.string().min(1).describe('A jobId returned by delegate().')
@@ -405,7 +418,7 @@ export function buildServer() {
         'those around the same task. Use delegate() only when you must pin one exact pair and handle failures yourself. ' +
         'Returns {jobId, status:"queued"} immediately and never waits; ' +
         'poll with job_wait or job_status, read with job_result. Write mode requires cwd to be a secondary ' +
-        '`git worktree add` checkout. Codex (model "default") has a limited plan quota and is only a LAST fallback, never a primary.',
+        '`git worktree add` checkout. Read jobs need no worktree: fan out several in parallel in your own checkout (see isolation). Codex (model "default") has a limited plan quota and is only a LAST fallback, never a primary.',
       inputSchema: {
         agent: agentEnum,
         model: z.string().min(1),
@@ -422,6 +435,8 @@ export function buildServer() {
         verify: z.array(VerifyCheckInput).optional().describe(
           'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
         ),
+        isolation: isolationArg,
+        output: outputArg,
       },
       outputSchema: DelegateResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
@@ -430,8 +445,8 @@ export function buildServer() {
     // for the job) -- do not reach for .then() here. guard() awaits whatever
     // the handler returns, so a plain object is correct. dispatch() below can
     // use .then() only because it really is async.
-    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify }, extra) => {
-      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify })
+    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output }, extra) => {
+      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output })
       // C1.2 origin mapping (best-effort, mapping-only): remember which
       // harness session this job came from for a future wake-up bridge.
       recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
@@ -469,12 +484,16 @@ export function buildServer() {
         verify: z.array(VerifyCheckInput).optional().describe(
           'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
         ),
+        isolation: isolationArg,
+        output: outputArg,
+        fanout: z.boolean().optional().describe('Also start the read-only parallelWith reviewer(s) declared on the routed chain step (e.g. adversarial-review: agy + copilot) and return them as parallelJobs; wait on all with job_wait({jobIds}). Default false.'),
+        label: z.string().min(1).optional().describe('Fan-out: a distinct label per call keeps N identical dispatches (e.g. parallel reviewers) from deduplicating into one job. Ignored when dispatchKey is given.'),
       },
       outputSchema: DispatchResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify }, extra) =>
-      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, clientHint: getMcpClientHint() }).then((res) => {
+    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout }, extra) =>
+      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, clientHint: getMcpClientHint() }).then((res) => {
         // C1.2 origin mapping (best-effort, mapping-only): remember which
         // harness session this dispatch came from for a future wake-up bridge.
         recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })
@@ -491,12 +510,19 @@ export function buildServer() {
         'Poll a job until it reaches a terminal state or timeoutS (max 60s) elapses. ' +
         'A remote (Jules) session waiting for interaction (AWAITING_*/PAUSED) also ends the wait immediately: ' +
         'done+waiting:true with attentionRequired, attentionReason and recommendedAction — then act via jules_interact. ' +
-        'waiting≠failure. done+timedOut:true means only the local budget elapsed; the job/session keeps running.',
-      inputSchema: { jobId: jobIdArg, timeoutS: z.number().int().positive().max(60).optional().default(30) },
-      outputSchema: JobRecord,
+        'waiting≠failure. done+timedOut:true means only the local budget elapsed; the job/session keeps running. ' +
+        'Fan-out: pass jobIds instead of jobId to wait on several jobs at once; the reply lists jobs (in your order), ' +
+        'completed and pending. until:"any" returns as soon as one finishes — read it, then wait again on pending.',
+      inputSchema: {
+        jobId: jobIdArg.optional(),
+        jobIds: z.array(z.string().min(1)).min(1).optional().describe('Wait on several jobs (fan-out). Mutually exclusive with jobId.'),
+        until: z.enum(['all', 'any']).optional().default('all').describe('With jobIds: all (default) waits for every job; any returns when the first one finishes.'),
+        timeoutS: z.number().int().positive().max(60).optional().default(30),
+      },
+      outputSchema: JobWaitResponse,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    guard(({ jobId, timeoutS }) => jobWaitTool({ jobId, timeoutS }))
+    guard(({ jobId, jobIds, until, timeoutS }) => jobWaitTool({ jobId, jobIds, until, timeoutS }))
   )
 
   register(
@@ -1092,15 +1118,13 @@ export function buildServer() {
             type: 'text',
             text:
               `Goal: ${goal}\nWorking directory: ${cwd}\n${files ? `Relevant files: ${files}\n` : ''}\n` +
-              `Run an adversarial review through agent-hub:\n` +
-              `1) route({taskType:'adversarial-review'}) — the delegation map's primary for this taskType is agy ` +
-              `claude-sonnet-4-6 run in parallel with copilot auto (see the returned chain's parallelWith pair), ` +
-              `fallback agy claude-opus-4-6-thinking.\n` +
-              `2) delegate({agent, model, cwd:'${cwd}', mode:'read', taskType:'adversarial-review', task:'<the change ` +
-              `to review, plus what to check>'}) for BOTH the primary and its parallelWith pair — pass the same ` +
-              `taskType ('adversarial-review') to each so metrics/learnings track the pair together. Name the exact ` +
-              `output format (numbered findings, file:line evidence) and a line budget in the task text.\n` +
-              `3) job_wait/job_status + job_result for each jobId.\n` +
+              `Run an adversarial review through agent-hub, in this checkout (read jobs need no worktree):\n` +
+              `1) dispatch({taskType:'adversarial-review', cwd:'${cwd}', mode:'read', fanout:true, output:'review', ` +
+              `waitMode:'none', task:'<the change to review, plus what to check>'}) — starts the routed primary (agy ` +
+              `claude-sonnet-4-6, fallback agy claude-opus-4-6-thinking) AND its parallelWith pair (copilot auto), ` +
+              `returned as jobId + parallelJobs[].jobId.\n` +
+              `2) job_wait({jobIds:[<primary jobId>, <each parallelJobs jobId>]}) until done (re-call with pending if it times out).\n` +
+              `3) job_result for each jobId: read review.findings (severity, file, line, title, detail); on reviewError fall back to the text.\n` +
               `4) Synthesize both: flag disagreements explicitly, do not just merge lists silently.`,
           },
         },
