@@ -427,7 +427,8 @@ export function buildServer() {
         'breakers, no dispatch-key idempotency and no execution lineage. Most callers want dispatch(), which adds all of ' +
         'those around the same task. Use delegate() only when you must pin one exact pair and handle failures yourself. ' +
         'Returns {jobId, status:"queued"} immediately and never waits; ' +
-        'poll with job_wait or job_status, read with job_result. Write mode requires cwd to be a secondary ' +
+        'poll with job_wait or job_status, read with job_result. Write mode with a writeScope runs in a hub-managed ' +
+        'scratch copy and applies only its in-scope diff to your tree (no worktree); without a writeScope it requires cwd to be a secondary ' +
         '`git worktree add` checkout. Read jobs need no worktree: fan out several in parallel in your own checkout (see isolation). Codex (model "default") has a limited plan quota and is only a LAST fallback, never a primary.',
       inputSchema: {
         agent: agentEnum,
