@@ -38,6 +38,29 @@ while **remote cancel is never guaranteed**. Dispatch idempotency
 from remote-creation reconciliation (fingerprint `repo/branch/task/title/window`
 plus a `listSessions` search before creating).
 
+## Dispatch mode resolution
+
+`dispatch` resolves each chain step's mode (used for the adaptive timeout,
+`startJob`, the per-cwd write-lock reservation and `writeScope` forwarding)
+from who chose it:
+
+- **Explicit `mode`**: the caller's mode wins on every step, primary and
+  fallbacks alike. When the step that ran declared a different mode, the
+  response carries `modeOverride: {requested, stepMode}`; it is absent when
+  they match or the step declares none. Not persisted on the job record.
+- **No `mode`**: each step's declared mode wins, falling back to `read`, and
+  the dispatch itself reserves no per-cwd write lock (unchanged behavior).
+  The MCP tool passes an omitted `mode` through as omitted.
+- **`writeScope`** is never silently dropped: it requires an explicit
+  `mode: 'write'` and is rejected before routing, reservation or any job
+  otherwise (`writeScope requires mode "write" (the effective mode for this
+  dispatch is "read")`).
+- `fanout` reviewers (`parallelWith`) always run read, whatever the caller's
+  mode.
+- Workflow nodes keep the previous resolution: `NodeSchema` defaults `mode`
+  to `read`, so the engine cannot tell an authored mode from a default and
+  passes `chainModeWins: true` (the step mode wins).
+
 ## Workflow-ready job records
 
 `JobRecord` carries nullable workflow columns from the start (`workflow_id`,

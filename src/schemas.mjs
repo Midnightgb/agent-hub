@@ -768,6 +768,9 @@ export const DispatchResponse = z
     // Resolved harness profile id + effective waitMode for this dispatch.
     harness: z.string().optional(),
     waitMode: z.enum(['none', 'attention', 'terminal']).optional(),
+    // Present only when an explicit caller mode replaced the declared mode of
+    // the chain step that ran (dispatch-caller-mode).
+    modeOverride: z.object({ requested: z.enum(['read', 'write']), stepMode: z.string() }).optional(),
   })
   .passthrough()
 

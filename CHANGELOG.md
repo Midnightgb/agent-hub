@@ -73,6 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `dispatch`: an explicit `mode` now wins over the routed chain step's own
+  mode on every step (adaptive timeout, `startJob`, per-cwd write-lock
+  reservation, `writeScope` forwarding). When they differ the response carries
+  `modeOverride: {requested, stepMode}` for the step that ran. Without `mode`
+  each step's declared mode still applies (fallback `read`); the MCP tool no
+  longer injects a `'read'` default. A `writeScope` is never silently dropped:
+  it now requires an explicit `mode: 'write'` and is rejected before any
+  routing, reservation or job otherwise. Workflow nodes keep the previous
+  resolution (their schema defaults `mode` to `read`, so the step mode wins).
 - Relicensed from Apache-2.0 to MIT. Releases up to and including v2.1.0 stay
   available under Apache-2.0; this and later versions are MIT.
 

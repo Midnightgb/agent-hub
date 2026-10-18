@@ -656,6 +656,9 @@ async function executeNode({
                 model: node.model,
                 cwd: node.cwd,
                 mode: node.mode,
+                // NodeSchema defaults mode to 'read', so it is not a caller choice:
+                // keep the chain step mode winning, as before dispatch-caller-mode.
+                chainModeWins: true,
                 workflowStep: node.id,
                 workflow_id: workflow.id,
                 step_id: node.id,
@@ -762,6 +765,9 @@ async function executeNode({
                     model: node.model,
                     cwd: node.cwd,
                     mode: node.mode,
+                    // NodeSchema defaults mode to 'read', so it is not a caller choice:
+                    // keep the chain step mode winning, as before dispatch-caller-mode.
+                    chainModeWins: true,
                     workflowStep: childStepId,
                     workflow_id: workflow.id,
                     step_id: childStepId,
