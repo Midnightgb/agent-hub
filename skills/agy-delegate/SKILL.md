@@ -28,7 +28,8 @@ canonical; this skill only points to it.
 for you: an agy read job runs in a hub-managed scratch copy of your tree (a private shared clone
 under `AGENT_HUB_HOME/scratch/` with your uncommitted and untracked files, removed when the job
 ends), so pass your own checkout as `cwd` and create no worktree yourself. Anything agy wrote in
-the copy, including git commits or config, is discarded and listed in `isolation.discardedPaths`.
+the copy is discarded: changed files are listed in `isolation.discardedPaths`, and git commits,
+branches or config it made there never reach your repository.
 The one write the copy cannot stop is to an absolute path in your tree: it shows up as
 `readGuard.level:'warn'`, so avoid absolute paths of your checkout in the task text. Fan several agy reads out in parallel the
 same way (see the orchestrator skill's "Parallel reads"). `isolation:'in-place'` opts back into
