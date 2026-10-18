@@ -141,6 +141,13 @@ const guard = (handler, wrap = (payload) => payload) => async (args, extra) => {
 
 const agentEnum = z.enum(['agy', 'opencode', 'copilot', 'codex'])
 const modeEnum = z.enum(['read', 'write'])
+// same-tree-fanout (S2): read-job isolation; see src/scratchcopy.mjs.
+const isolationArg = z
+  .enum(['auto', 'in-place', 'scratch'])
+  .optional()
+  .describe(
+    'Read jobs only. auto (default): agy runs in a hub-managed scratch copy of your tree (writes discarded, removed after the job); copilot/codex/opencode run in place with a warn-level read guard. in-place: run in your tree (strict guard for agy). scratch: always use a scratch copy.'
+  )
 const waitModeEnum = z.enum(['none', 'attention', 'terminal'])
 const harnessEnum = z.enum(['generic', 'claude-code', 'opencode'])
 const jobIdArg = z.string().min(1).describe('A jobId returned by delegate().')
@@ -405,7 +412,7 @@ export function buildServer() {
         'those around the same task. Use delegate() only when you must pin one exact pair and handle failures yourself. ' +
         'Returns {jobId, status:"queued"} immediately and never waits; ' +
         'poll with job_wait or job_status, read with job_result. Write mode requires cwd to be a secondary ' +
-        '`git worktree add` checkout. Codex (model "default") has a limited plan quota and is only a LAST fallback, never a primary.',
+        '`git worktree add` checkout. Read jobs need no worktree: fan out several in parallel in your own checkout (see isolation). Codex (model "default") has a limited plan quota and is only a LAST fallback, never a primary.',
       inputSchema: {
         agent: agentEnum,
         model: z.string().min(1),
@@ -422,6 +429,7 @@ export function buildServer() {
         verify: z.array(VerifyCheckInput).optional().describe(
           'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
         ),
+        isolation: isolationArg,
       },
       outputSchema: DelegateResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
@@ -430,8 +438,8 @@ export function buildServer() {
     // for the job) -- do not reach for .then() here. guard() awaits whatever
     // the handler returns, so a plain object is correct. dispatch() below can
     // use .then() only because it really is async.
-    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify }, extra) => {
-      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify })
+    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation }, extra) => {
+      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation })
       // C1.2 origin mapping (best-effort, mapping-only): remember which
       // harness session this job came from for a future wake-up bridge.
       recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
@@ -469,12 +477,13 @@ export function buildServer() {
         verify: z.array(VerifyCheckInput).optional().describe(
           'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
         ),
+        isolation: isolationArg,
       },
       outputSchema: DispatchResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify }, extra) =>
-      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, clientHint: getMcpClientHint() }).then((res) => {
+    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation }, extra) =>
+      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, clientHint: getMcpClientHint() }).then((res) => {
         // C1.2 origin mapping (best-effort, mapping-only): remember which
         // harness session this dispatch came from for a future wake-up bridge.
         recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })

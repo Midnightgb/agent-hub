@@ -36,6 +36,7 @@ src/
   proposals.mjs      Wilson-bound chain-reorder proposals, human-accepted before they apply
   learnings.mjs      curated pending/approved gotchas, sanitized and injected into root turns
   readguard.mjs      git snapshot for read jobs -> read_mode_violation (AGENT_HUB_READGUARD_IGNORED)
+  scratchcopy.mjs    read isolation per adapter readPolicy; hub-managed scratch copy (AGENT_HUB_READGUARD=strict)
   hook.mjs           SubagentStart/SubagentStop -> events
   dashboard.mjs      node:http dashboard: serves dashboard/dist, SSE /events, JSON API
   accounts.mjs       Jules accounts management (0600 permissions, key masking)

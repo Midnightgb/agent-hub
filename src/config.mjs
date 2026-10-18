@@ -17,6 +17,14 @@ export function readguardIgnoredEnabled(env = process.env) {
   return env?.AGENT_HUB_READGUARD_IGNORED === '1'
 }
 
+/**
+ * same-tree-fanout (S1): AGENT_HUB_READGUARD=strict fails every read job whose
+ * working tree changed during the run, as before per-adapter read policies.
+ */
+export function readguardStrict(env = process.env) {
+  return env?.AGENT_HUB_READGUARD === 'strict'
+}
+
 export function paths(env = process.env) {
   const home = stateHome(env)
   return {
