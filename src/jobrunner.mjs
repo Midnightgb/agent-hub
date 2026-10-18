@@ -9,6 +9,7 @@ import { resolveSandboxProfile, filterEnv, sandboxTelemetry } from './sandbox.mj
 import { resolveEffectiveTimeoutS as defaultResolveEffectiveTimeoutS } from './timeouts.mjs'
 import { selectLearnings as defaultSelectLearnings, augmentTask as defaultAugmentTask } from './learnings.mjs'
 import { takeSnapshot as defaultTakeSnapshot, diffSnapshots as defaultDiffSnapshots, formatViolation as defaultFormatViolation } from './readguard.mjs'
+import { assertIsolation, resolveReadIsolation, createScratchCopy as defaultCreateScratchCopy, removeScratchCopy as defaultRemoveScratchCopy } from './scratchcopy.mjs'
 import { startRemoteJob as defaultStartRemoteJob } from './cloud/runner.mjs'
 import { resolveAgyCommand, profileFromEnv, resolveAgyProfileSync as defaultResolveAgyProfileSync, recordQuotaExhaustion as defaultRecordQuotaExhaustion } from './providers/agys.mjs'
 import { modelGroupFor } from './providers/profiles.mjs'
@@ -96,6 +97,17 @@ function skippedVerification(reason) {
   return { ok: null, checks: [], skipped: true, reason }
 }
 
+/** Append (never replace) a human-readable warning on the job record. */
+function appendWarning(jobId, warning, env) {
+  updateResult(jobId, (current) => ({ warnings: [...(current.warnings ?? []), warning] }), env)
+}
+
+function formatChangedPaths(diff) {
+  const shown = diff.paths.slice(0, 10)
+  const list = shown.join(', ') + (diff.paths.length > 10 ? ', …' : '')
+  return `${diff.paths.length} path(s) changed in the working tree during the run: ${list}${diff.headChanged ? ' and HEAD moved' : ''}`
+}
+
 /**
  * Start a job. Returns immediately with the queued/failed-fast job record;
  * the actual CLI run happens in the background. `done` resolves once the
@@ -171,7 +183,14 @@ export function startJob({
   // validation without touching startJob's body.
   readDiscoveryFn = defaultReadDiscovery,
   validateVariantFn = defaultValidateVariant,
+  // same-tree-fanout (S1, S2): how a read job is isolated from the caller's
+  // tree — 'auto' (per adapter readPolicy), 'in-place' or 'scratch'. Ignored
+  // for write mode and remote adapters. See src/scratchcopy.mjs.
+  isolation = 'auto',
+  createScratchCopyFn = defaultCreateScratchCopy,
+  removeScratchCopyFn = defaultRemoveScratchCopy,
 }) {
+  assertIsolation(isolation)
   // D2: one bad check must reject the whole call before any side effect
   // (job record, write lock, spawn) — mirrors the adapterFor(agent) throw
   // just below for an unknown agent.
@@ -362,7 +381,30 @@ export function startJob({
     if (repoInfo) updateResult(job.jobId, { repo: repoInfo }, env)
   }
 
-  const adapterArgs = { model, prompt: effectiveTask, cwd, mode, title, variant: effectiveVariant, timeoutS: effectiveTimeoutS, sessionId, env }
+  // same-tree-fanout (S1, S2): a read job either runs in the caller's tree
+  // (guard 'warn' for adapters whose CLI enforces read-only, 'strict'
+  // otherwise) or in a hub-owned scratch copy whose writes are discarded.
+  // spawnCwd is where the CLI runs; `cwd` stays the caller's tree for the
+  // record, the read guard, verification and the dashboard.
+  let readIsolation = null
+  let scratch = null
+  let spawnCwd = cwd
+  if (mode === 'read' && cwd) {
+    readIsolation = resolveReadIsolation({ adapter, isolation, env })
+    if (readIsolation.mode === 'scratch') {
+      const copy = createScratchCopyFn({ cwd, id: job.jobId, env })
+      if (copy.ok) {
+        scratch = copy
+        spawnCwd = copy.cwd
+      } else {
+        readIsolation = { mode: 'in-place', guard: 'strict', fallbackReason: copy.reason }
+        appendWarning(job.jobId, `scratch copy unavailable (${copy.reason}); ran in place with the strict read guard`, env)
+      }
+    }
+    updateResult(job.jobId, { isolation: { ...readIsolation, ...(scratch ? { dir: scratch.dir } : {}) } }, env)
+  }
+
+  const adapterArgs = { model, prompt: effectiveTask, cwd: spawnCwd, mode, title, variant: effectiveVariant, timeoutS: effectiveTimeoutS, sessionId, env }
   const argv = adapter.buildArgv(adapterArgs)
   // Only opencode (v2) provides stdinFor: its prompt travels on stdin
   // instead of argv (E3/E4). Every other adapter is unaffected -- the
@@ -373,6 +415,8 @@ export function startJob({
   // Snapshot right before spawning, AFTER the write gate/lock: a gate failure
   // must never be judged by a snapshot it never ran against.
   const snapshot = mode === 'read' || mode === 'write' ? takeSnapshotFn(cwd, { env }) : null
+  // What the agent itself wrote inside its scratch copy (reported, discarded).
+  const scratchSnapshot = scratch ? takeSnapshotFn(scratch.cwd, { env }) : null
 
   // The local CLIs are third-party processes outside our control. Secrets
   // are always redacted; HOME isolation depends on the sandbox profile.
@@ -384,7 +428,7 @@ export function startJob({
   // worktree than the one it delegates into) would silently redirect the
   // child into the wrong directory. Set it explicitly for every adapter so
   // it always agrees with the `cwd` passed to spawn below.
-  childEnv.PWD = cwd
+  childEnv.PWD = spawnCwd
 
   if (sandboxProfile === 'compatibility' && !_warnedCompatibility) {
     _warnedCompatibility = true
@@ -395,11 +439,12 @@ export function startJob({
 
   let child
   try {
-    child = spawn(resolved.cmd, resolved.args, { cwd, env: childEnv, stdin })
+    child = spawn(resolved.cmd, resolved.args, { cwd: spawnCwd, env: childEnv, stdin })
   } catch (error) {
     updateResult(job.jobId, { status: 'failed', errorKind: 'crash', error: String(error?.message ?? error) }, env)
     appendEvent({ kind: 'job.failed', agent, model, cwd, title, jobId: job.jobId, errorKind: 'crash', taskType, summary: String(error?.message ?? error), harness: harness ?? null, waitMode: waitMode ?? null, profile: effectiveProfile, profileStatus: effectiveProfileStatus }, { env })
     if (mode === 'write') releaseWriteLock({ cwd, token: leaseToken, jobId: job.jobId, env })
+    if (scratch) removeScratchCopyFn({ root: scratch.root, dir: scratch.dir })
     return { job: readResult(job.jobId, env), done: Promise.resolve() }
   }
 
@@ -425,7 +470,7 @@ export function startJob({
 
   const done = exitPromise
     .then(({ code, timedOut }) =>
-      finishJob({ jobId: job.jobId, agent, model, cwd, title, adapter, mode, env, timedOut, exitCode: code, taskType, snapshot, takeSnapshotFn, diffSnapshotsFn, formatViolationFn, harness, waitMode, runCommandFn, profile: effectiveProfile, profileStatus: effectiveProfileStatus, recordQuotaExhaustionFn, diffBase, verify: normalizedVerify, runJobVerificationFn })
+      finishJob({ jobId: job.jobId, agent, model, cwd, title, adapter, mode, env, timedOut, exitCode: code, taskType, snapshot, readGuardLevel: readIsolation?.guard ?? 'strict', scratch, scratchSnapshot, takeSnapshotFn, diffSnapshotsFn, formatViolationFn, harness, waitMode, runCommandFn, profile: effectiveProfile, profileStatus: effectiveProfileStatus, recordQuotaExhaustionFn, diffBase, verify: normalizedVerify, runJobVerificationFn })
     )
     .finally(() => {
       stopHeartbeat(job.jobId)
@@ -434,6 +479,7 @@ export function startJob({
       // by another holder, the stale token no longer matches and this
       // correctly no-ops instead of deleting the new holder's lease.
       if (mode === 'write') releaseWriteLock({ cwd, token: leaseToken, jobId: job.jobId, env })
+      if (scratch) removeScratchCopyFn({ root: scratch.root, dir: scratch.dir })
     })
 
   return { job: readResult(job.jobId, env), done }
@@ -598,6 +644,12 @@ async function finishJob({
   exitCode = null,
   taskType = null,
   snapshot = null,
+  // same-tree-fanout (S1, S2): 'strict' fails a read job whose tree changed;
+  // 'warn' records the change instead. scratch/scratchSnapshot describe a
+  // scratch-copy run, whose own writes are reported as discardedPaths.
+  readGuardLevel = 'strict',
+  scratch = null,
+  scratchSnapshot = null,
   takeSnapshotFn = defaultTakeSnapshot,
   diffSnapshotsFn = defaultDiffSnapshots,
   formatViolationFn = defaultFormatViolation,
@@ -651,7 +703,15 @@ async function finishJob({
   // A read-mode or write-mode job is re-snapshotted at the terminal transition.
   // A non-git cwd produced no baseline, so the diff stays null and nothing changes.
   const diff = snapshot ? diffSnapshotsFn(snapshot, takeSnapshotFn(cwd, { env })) : null
-  const violation = mode === 'read' && diff?.changed ? formatViolationFn(diff) : null
+  const violation = mode === 'read' && diff?.changed && readGuardLevel === 'strict' ? formatViolationFn(diff) : null
+  if (mode === 'read' && diff?.changed && readGuardLevel === 'warn') {
+    updateResult(jobId, { readGuard: { level: 'warn', changedPaths: diff.paths, headChanged: diff.headChanged } }, env)
+    appendWarning(jobId, `read guard (warn): ${formatChangedPaths(diff)} — another process or the agent may have written them`, env)
+  }
+  if (scratch && scratchSnapshot) {
+    const scratchDiff = diffSnapshotsFn(scratchSnapshot, takeSnapshotFn(scratch.cwd, { env }))
+    updateResult(jobId, (cur) => ({ isolation: { ...(cur.isolation ?? {}), discardedPaths: scratchDiff.changed ? scratchDiff.paths : [] } }), env)
+  }
 
   const error = adapter.classifyError(stdout, { timedOut, code: exitCode })
   if (error) {

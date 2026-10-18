@@ -378,6 +378,9 @@ export async function dispatch({
   rootExecutionId = null,
   timeoutS,
   category = null,
+  // same-tree-fanout (S2): read-job isolation forwarded to startJob
+  // ('auto' | 'in-place' | 'scratch'); undefined keeps startJob's default.
+  isolation = undefined,
   env = process.env,
   // Harness wait contract: waitMode 'none' returns at create/start,
   // 'attention' observes until terminal OR waiting/attention, 'terminal'
@@ -932,6 +935,7 @@ export async function dispatch({
           env,
           ...restDeps,
           verify,
+          ...(isolation ? { isolation } : {}),
           profile,
           profileStatus,
           // Resolved contract always wins over caller extras.

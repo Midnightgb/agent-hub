@@ -5,6 +5,10 @@ import { assignmentExportTimeoutMs } from '../config.mjs'
 export const id = 'opencode'
 export const cmd = 'opencode'
 
+// same-tree-fanout (S1): read mode runs the `plan` agent, which refuses edits,
+// so a read job may run in the caller's tree.
+export const readPolicy = 'enforced'
+
 /**
  * Argv only. read -> --agent plan; write -> --agent build --auto.
  * sessionId resumes a session (-s <id>); variant selects reasoning effort

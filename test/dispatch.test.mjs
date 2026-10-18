@@ -393,6 +393,27 @@ test('dispatch forwards a valid verify array to startJobFn', async () => {
   assert.deepEqual(receivedVerify, [{ name: 'tests', argv: ['npm', 'test'] }])
 })
 
+test('same-tree-fanout S2: dispatch forwards isolation to startJobFn, and omits it when not given', async () => {
+  const received = []
+  const mockStartJob = async (args) => {
+    received.push(Object.prototype.hasOwnProperty.call(args, 'isolation') ? args.isolation : '<absent>')
+    return {
+      job: { jobId: `job-iso-${received.length}`, agent: args.agent, model: args.model, status: 'queued', createdAt: new Date().toISOString(), dispatchKey: args.dispatchKey },
+      done: Promise.resolve(),
+    }
+  }
+  const base = {
+    cwd: '/tmp/test-isolation',
+    routeFn: async () => ({ primary: { agent: 'agy', model: 'gemini-3.8-flash-medium' }, fallbacks: [] }),
+    circuitBreakerOpenFn: () => false,
+    runPreflightFn: async () => ({ status: 'ready' }),
+    startJobFn: mockStartJob,
+  }
+  await dispatch({ ...base, task: 'iso-forward-scratch', isolation: 'scratch' })
+  await dispatch({ ...base, task: 'iso-forward-default' })
+  assert.deepEqual(received, ['scratch', '<absent>'])
+})
+
 test('reserves write lock when mode is write and passes reservationToken to startJob', async () => {
   let acquireLockCalled = false
   let passedReservationToken = null

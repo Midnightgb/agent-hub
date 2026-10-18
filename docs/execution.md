@@ -117,7 +117,9 @@ not rehydrate automatically. It surfaces as a failed turn; call
 
 ## Write-mode gate
 
-A `delegate()`/`job_reply()` call with `mode: 'write'` requires `cwd` to be
+Only write mode needs a worktree; read jobs run in the caller's checkout (see
+"Read-mode isolation and guard" below). A `delegate()`/`job_reply()` call with
+`mode: 'write'` requires `cwd` to be
 a secondary `git worktree add` checkout (see `src/worktree.mjs`), plus a
 per-cwd single-writer lock — this keeps an agent CLI from editing the same
 working tree Claude Code (or another job) is using, and keeps two write jobs
@@ -161,25 +163,55 @@ at 3600 s — once a row has at least `METRICS_MIN_SAMPLES` (10) samples; thin
 `taskType` data falls back to the general (`taskType: null`) row. The job
 record keeps the value used and its `timeoutSource` (`adaptive` or `default`).
 
-## Read-mode guard
+## Read-mode isolation and guard
 
-Before a `read`-mode job starts, the hub snapshots the git-visible state of
-`cwd` (`git status --porcelain=v1 -z` plus `HEAD`) and re-snapshots it when the
-job reaches a terminal state. If the tree changed, a job the CLI reported as
-succeeded is failed with `errorKind: read_mode_violation` naming the changed
-paths; the response text and tokens are still kept. The guard exists because
-read mode is not actually enforced by the CLIs: verified, `agy --mode plan`
-writes files with or without `--dangerously-skip-permissions` (opencode's plan
-agent did respect read mode in testing). A `cwd` outside a git work tree
-produces no snapshot and is reported unverifiable rather than clean, and
-because the guard is a tree diff it also flags changes other processes make in
-the same `cwd` while the job runs.
+Read jobs need no worktree: a caller (Claude Code) can fan out several read
+jobs in parallel in its own checkout. Each adapter declares a `readPolicy`
+(see `src/scratchcopy.mjs`), and the `isolation` param on `delegate`/`dispatch`
+(`auto` by default, `in-place`, `scratch`) overrides it:
+
+| Adapter | `readPolicy` | `auto` runs | Read guard |
+|---|---|---|---|
+| copilot (`--deny-tool=write/shell`), codex (read-only sandbox), opencode (`plan` agent) | `enforced` | in the caller's tree | `warn` |
+| agy (`--mode plan` writes anyway) | `scratch` | in a hub-managed scratch copy | `warn` on the caller's tree |
+| any adapter without a policy | — | in the caller's tree | `strict` |
+
+**Scratch copy.** The hub creates a detached `git worktree` of the caller's
+repository under `AGENT_HUB_HOME/scratch/<jobId>`, then replays the caller's
+uncommitted state into it: tracked changes (staged and unstaged, one binary
+diff against `HEAD`) and untracked, non-ignored files. Ignored files (`.env`,
+`node_modules`, build output) are not copied. The CLI runs in the same
+subdirectory of the copy as the caller's `cwd`, and the copy is removed when
+the job ends; what the agent wrote there is reported as
+`isolation.discardedPaths` and thrown away. The caller's tree and index are
+only read (`git --no-optional-locks`). If no copy can be made (not a git work
+tree, no commits, more than 2000 untracked files, a failed `git worktree
+add`), the job runs in place with the strict guard and a warning, and
+`isolation.fallbackReason` says why. Copies orphaned by a crashed hub are swept
+after 24 hours.
+
+**Read guard.** Before a read job starts, the hub snapshots the git-visible
+state of `cwd` (`git status --porcelain=v1 -z` plus `HEAD`) and re-snapshots it
+when the job reaches a terminal state. The guard is a whole-tree diff: it cannot
+tell who changed a path, so it also sees edits by the caller or a sibling job
+running at the same time.
+
+- `strict`: a job the CLI reported as succeeded is failed with
+  `errorKind: read_mode_violation` naming the changed paths; the response text
+  and tokens are still kept.
+- `warn`: the job keeps its status; the changed paths are recorded as
+  `readGuard: { level: 'warn', changedPaths, headChanged }` and as a warning.
+
+`AGENT_HUB_READGUARD=strict` forces the strict guard for every read job (the
+behavior before per-adapter policies). `job_status` and `job_result` return
+`isolation`, `readGuard` and `warnings` when a job has them. A `cwd` outside a
+git work tree produces no snapshot and is reported unverifiable rather than
+clean.
 
 Files ignored by git (for example `.env` or build output) are skipped by default.
 Setting `AGENT_HUB_READGUARD_IGNORED=1` enables snapshotting of ignored files
 via `git status --ignored=matching`. Note the documented residual limits:
 in-place edits to existing files inside an already-ignored directory without
 altering directory mtime or entry count are not detected because `git status`
-reports only `!! dir/`. Run read jobs from a disposable worktree when strict
-isolation is required.
+reports only `!! dir/`.
 

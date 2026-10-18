@@ -36,6 +36,20 @@ function jobStatusView(result) {
     // D2 (agy-hub-verification): hub-run verification result, present only
     // when the job was given a `verify` array (docs/verification.md).
     verification: result.verification ?? null,
+    ...readIsolationView(result),
+  }
+}
+
+/**
+ * same-tree-fanout (S1, S2): how a read job was isolated and what the read
+ * guard saw. Only present on records that carry them, so older records and
+ * write jobs keep their exact previous shape.
+ */
+function readIsolationView(result) {
+  return {
+    ...(result.isolation ? { isolation: result.isolation } : {}),
+    ...(result.readGuard ? { readGuard: result.readGuard } : {}),
+    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
   }
 }
 
@@ -76,6 +90,8 @@ export function delegateTool({
   // called ("fails fast before dispatch"); startJob does the canonical
   // normalization and persists it on the job record.
   verify = null,
+  // same-tree-fanout (S2): 'auto' | 'in-place' | 'scratch' for read jobs.
+  isolation,
   startJobFn = defaultStartJob,
   listAgysProfilesFn = listAgysProfilesSync,
   env = process.env,
@@ -114,6 +130,7 @@ export function delegateTool({
     profile: effectiveProfile,
     profileStatus: effectiveProfileStatus,
     verify,
+    ...(isolation ? { isolation } : {}),
   })
   return { jobId: job.jobId, status: job.status, errorKind: job.errorKind ?? null }
 }
@@ -397,6 +414,7 @@ export function jobResultTool({ jobId, maxLines = 20, tailLines = 10 }) {
     status: result.status,
     errorKind: result.errorKind ?? null,
     verification: result.verification ?? null,
+    ...readIsolationView(result),
   }
 }
 

@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Read jobs fan out in the caller's own checkout, with no caller-managed
+  worktrees. Each adapter declares a `readPolicy`: agy read jobs run in a
+  hub-managed scratch copy (a detached worktree under
+  `AGENT_HUB_HOME/scratch/` carrying uncommitted and untracked files, removed
+  when the job ends). copilot/codex/opencode read jobs run in place with a
+  warn-level read guard. New `isolation` param (`auto` | `in-place` |
+  `scratch`) on `delegate`/`dispatch`. `job_status`/`job_result` expose
+  `isolation`, `readGuard` and `warnings`. `AGENT_HUB_READGUARD=strict`
+  restores failing every read job whose tree changed.
 - Diff stats for write-mode jobs: a GitHub-style `+X −Y · N files` summary and
   per-file table, live on Running Jobs and persisted (survives worktree
   deletion) on History. Measured from `git diff --numstat` against the
