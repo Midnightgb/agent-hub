@@ -11,6 +11,7 @@ import { initDb } from './storage/index.mjs'
 import { reconcileOrphans, listJobs, readResult, responsePath } from './jobstore.mjs'
 import { agentsStatusTool, routeTool, knownTaskTypes } from './tools/agents.mjs'
 import { delegateTool, jobWaitTool, jobStatusTool, jobResultTool, jobCancelTool, jobReplyTool } from './tools/jobs.mjs'
+import { taskAssignTool, taskContinueTool, taskStatusTool, taskCloseTool } from './tools/assignments.mjs'
 import { julesDelegateTool, julesSourcesTool, julesCheckTool, julesSessionsTool, julesAccountsTool, julesSchedulesTool, julesInteractTool, julesWait, julesSuperviseTool } from './tools/jules.mjs'
 import { computeAttention } from './cloud/check.mjs'
 import { agentsQuotaTool } from './tools/agents.mjs'
@@ -44,6 +45,9 @@ import {
   JulesAccountsResponse,
   JulesSchedulesResponse,
   JulesSuperviseResponse,
+  TaskTurnResponse,
+  TaskStatusResponse,
+  TaskCloseResponse,
 } from './schemas.mjs'
 
 const VERSION = '2.1.0'
@@ -564,6 +568,110 @@ export function buildServer() {
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
     guard(({ jobId, message, mode, timeoutS, title, taskType, action }) => jobReplyTool({ jobId, message, mode, timeoutS, title, taskType, action }))
+  )
+
+  // Task assignments: one plan task kept in one agent's native session across
+  // many turns until a human closes it (src/tools/assignments.mjs).
+  const assignmentIdArg = z.string().min(1).describe('An assignmentId returned by task_assign().')
+
+  register(
+    'task_assign',
+    {
+      title: 'Assign a plan task to one agent, keeping its session across turns',
+      description:
+        'Assign ONE plan task to ONE agent and start its first turn. Use this instead of delegate() when the work will ' +
+        'need rework or follow-up turns: the agent keeps its native CLI session (agy --conversation, opencode -s, codex ' +
+        'exec resume), so later turns do not re-read the codebase. Workflow: assign once; for every follow-up (review ' +
+        'findings, corrections, "now execute the plan") call task_continue with the SAME assignmentId — never a new ' +
+        'task_assign or delegate — until the human says the task is done; then call task_close. Returns ' +
+        '{assignmentId, jobId, status} immediately and never waits; poll with job_wait/job_status on jobId or with ' +
+        'task_status. Only agy, opencode and codex (errorKind:"unsupported_agent" otherwise); for Jules use ' +
+        'jules_delegate + jules_interact. Write mode requires cwd to be a secondary `git worktree add` checkout.',
+      inputSchema: {
+        agent: z.enum(['agy', 'opencode', 'codex']),
+        model: z.string().min(1),
+        title: z.string().min(1).describe('Short human-readable name of the task.'),
+        task: z.string().min(1).describe('The task brief; also stored as the assignment brief.'),
+        planRef: z.string().optional().describe('Optional pointer to the plan item, e.g. "odd/tasks/x.md#T2".'),
+        cwd: z.string().min(1),
+        mode: modeEnum.optional().default('read'),
+        timeoutS: z.number().int().positive().optional(),
+        variant: z.string().optional().describe('opencode reasoning effort (minimal/low/medium/high/max); ignored by agy.'),
+        taskType: taskTypeArg,
+      },
+      outputSchema: TaskTurnResponse,
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    guard(({ agent, model, title, task, planRef, cwd, mode, timeoutS, variant, taskType }, extra) =>
+      taskAssignTool({ agent, model, title, task, planRef, cwd, mode, timeoutS, variant, taskType }).then((res) => {
+        recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
+        return res
+      })
+    )
+  )
+
+  register(
+    'task_continue',
+    {
+      title: 'Continue an assigned task in the same agent session',
+      description:
+        'Send the next message to an assigned task: resumes the native session of the assignment\'s latest turn ' +
+        '(no jobId needed) and starts a new turn. Use it for every follow-up until the human closes the task. Refused ' +
+        'with errorKind "busy" while the previous turn is still running (wait for it first), "closed" after task_close, ' +
+        '"not_found" for an unknown id and "no_session" when the last turn recorded no resumable session. Returns ' +
+        '{jobId, status} immediately; poll with job_wait or task_status.',
+      inputSchema: {
+        assignmentId: assignmentIdArg,
+        message: z.string().min(1).describe('The follow-up instruction for the agent.'),
+        timeoutS: z.number().int().positive().optional(),
+      },
+      outputSchema: TaskTurnResponse,
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    guard(({ assignmentId, message, timeoutS }, extra) =>
+      taskContinueTool({ assignmentId, message, timeoutS }).then((res) => {
+        recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
+        return res
+      })
+    )
+  )
+
+  register(
+    'task_status',
+    {
+      title: 'Read one assigned task, or list them',
+      description:
+        'With assignmentId: the assignment (status, turns, headJobId, sessionId, tokensUsed, inFlightJobId) plus ' +
+        'summaries of its latest finished turn (headJob) and running turn (inFlightJob). Without it: assignments newest ' +
+        'first, filtered by status/agent/limit. A finished turn is folded into the assignment whenever this runs.',
+      inputSchema: {
+        assignmentId: assignmentIdArg.optional(),
+        status: z.enum(['active', 'closed']).optional(),
+        agent: z.string().optional(),
+        limit: z.number().int().positive().max(200).optional(),
+      },
+      outputSchema: TaskStatusResponse,
+      annotations: { readOnlyHint: false, idempotentHint: true },
+    },
+    guard(({ assignmentId, status, agent, limit }) => taskStatusTool({ assignmentId, status, agent, limit }))
+  )
+
+  register(
+    'task_close',
+    {
+      title: 'Close an assigned task',
+      description:
+        'Close an assignment ONLY when the human says the task is done: verdict "accepted" (work kept) or "abandoned". ' +
+        'Further task_continue calls are refused with "closed". Refused with "busy" while a turn is still running.',
+      inputSchema: {
+        assignmentId: assignmentIdArg,
+        verdict: z.enum(['accepted', 'abandoned']),
+        note: z.string().optional(),
+      },
+      outputSchema: TaskCloseResponse,
+      annotations: { readOnlyHint: false },
+    },
+    guard(({ assignmentId, verdict, note }) => taskCloseTool({ assignmentId, verdict, note }))
   )
 
   register(

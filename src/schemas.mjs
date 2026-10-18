@@ -626,6 +626,79 @@ export const DelegateResponse = z
   })
   .passthrough()
 
+// Task assignments (src/assignments.mjs, src/tools/assignments.mjs): one plan
+// task kept in one agent's native session until a human closes it.
+export const Assignment = z
+  .object({
+    id: z.string(),
+    agent: z.string(),
+    model: nullableString,
+    title: nullableString,
+    brief: z.string(),
+    planRef: nullableString,
+    cwd: nullableString,
+    mode: nullableString,
+    status: z.enum(['active', 'closed']),
+    headJobId: nullableString,
+    sessionId: nullableString,
+    turns: z.number().int().nonnegative(),
+    tokensUsed: z.number().int().nonnegative(),
+    inFlightJobId: nullableString,
+    rehydratedAt: nullableString,
+    closeVerdict: nullableString,
+    closeNote: nullableString,
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    closedAt: nullableString,
+  })
+  .passthrough()
+
+const AssignmentJobSummary = z
+  .object({
+    jobId: z.string(),
+    status: z.string(),
+    errorKind: nullableString,
+    sessionId: nullableString,
+    tokens: z.number().int().nonnegative(),
+    updatedAt: nullableString,
+  })
+  .passthrough()
+
+/** task_assign / task_continue: the turn that was started (or why not). */
+export const TaskTurnResponse = z
+  .object({
+    assignmentId: nullableString,
+    jobId: z.string().nullable(),
+    status: z.string(),
+    errorKind: nullableString,
+    error: nullableString,
+    parentJobId: nullableString,
+    inFlightJobId: nullableString,
+    turnDepth: z.number().int().nonnegative().optional(),
+  })
+  .passthrough()
+
+/** task_status: one reconciled assignment, or a list when no id is given. */
+export const TaskStatusResponse = z
+  .object({
+    assignmentId: z.string().optional(),
+    errorKind: nullableString,
+    assignment: Assignment.nullable().optional(),
+    headJob: AssignmentJobSummary.nullable().optional(),
+    inFlightJob: AssignmentJobSummary.nullable().optional(),
+    assignments: z.array(Assignment).optional(),
+  })
+  .passthrough()
+
+export const TaskCloseResponse = z
+  .object({
+    assignmentId: z.string(),
+    errorKind: nullableString,
+    assignment: Assignment.nullable(),
+    inFlightJobId: nullableString,
+  })
+  .passthrough()
+
 export const DispatchResponse = z
   .object({
     job: JobRecord,

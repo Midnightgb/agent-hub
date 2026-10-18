@@ -57,12 +57,12 @@ Out of scope: copilot resume, a claude CLI adapter, long-lived CLI processes, ro
 
 - Forecast: ~1,100 authored changed lines (T1 ~250, T2 ~400, T3 ~150, T4 ~200, T5 ~100) — over the ~400 budget.
 - Strategy: `ask-on-risk` (default); chain strategy `feature-branch-chain` (user choice 2026-10-08): slice PRs merge into `feat/task-assignments`, one final PR to `main`.
-- Running count: ~654 (T1).
+- Running count: ~654 (T1) + ~520 (T2).
 
 ## Tasks
 
-- [x] **T1 — Assignment store.** `assignments` table in `src/storage/sqlite.mjs` (SQLite + JSON fallback) + `src/assignments.mjs` (create/get/list/beginTurn/completeTurn/abortTurn/closeAssignment/markRehydrated; CAS via `updateAssignmentAtomic`) with tests. Route: delegated (writer; preparation read of storage layer). RED: `ERR_MODULE_NOT_FOUND` on `src/assignments.mjs`. GREEN: `node --test test/assignments.test.mjs` 28/28 (writer + parent spot check); `npm test` 1621/1621 (writer). ~654 authored lines (dual backend doubles code and tests). Notes for T2: `beginTurn` needs the jobId before `startJob`; refusals are `{ok:false, reason}` incl. `lock_mismatch`; invalid input throws.
-- [ ] **T2 — MCP tools.** `task_assign`, `task_continue`, `task_status`, `task_close` wired over `startJob`/`job_reply`, registered in `src/index.mjs` + `src/schemas.mjs`, with tests. Route: delegated (writer, 2+ non-trivial files).
+- [x] **T1 — Assignment store.** `assignments` table in `src/storage/sqlite.mjs` (SQLite + JSON fallback) + `src/assignments.mjs` (create/get/list/beginTurn/completeTurn/abortTurn/closeAssignment/markRehydrated; CAS via `updateAssignmentAtomic`) with tests. Route: delegated (writer; preparation read of storage layer). RED: `ERR_MODULE_NOT_FOUND` on `src/assignments.mjs`. GREEN: `node --test test/assignments.test.mjs` 28/28 (writer + parent spot check); `npm test` 1621/1621 (writer). ~654 authored lines (dual backend doubles code and tests). Commit `2a5fdf5`. Assessed: medium, `review_due` (slice_budget_reached); consent **declined** by user for this candidate → ordinary policy (writer self-verification + parent spot check). Reviewed boundary advanced to `2a5fdf5`. Notes for T2: `beginTurn` needs the jobId before `startJob`; refusals are `{ok:false, reason}` incl. `lock_mismatch`; invalid input throws.
+- [x] **T2 — MCP tools.** `task_assign`, `task_continue`, `task_status`, `task_close` in `src/tools/assignments.mjs`, registered in `src/index.mjs` + schemas in `src/schemas.mjs`, with tests. Turn completion is reconciled lazily (on status/continue/close, from the head job record) so it survives restarts. Local agents only (agy, opencode, codex); Jules stays on `jules_interact` (decision: its remote session already gives multi-turn; follow-up if needed). Route: delegated (writer, 2+ non-trivial files) + parent inline mechanical fix of `test/server.test.mjs` tool list. Deviations accepted: jobId cannot be pre-reserved (`createJob` owns it), so the lock takes a `reserve-*` placeholder rebound via new `rebindTurn` right after `startJob` returns (stale placeholder >60s released on reconcile); `src/tools/jobs.mjs` untouched (wraps `delegateTool`/`jobReplyTool`); `model` required; optional `timeoutS` on continue; failed first turn leaves assignment active without head; codex tokens counted as input+output. RED: `ERR_MODULE_NOT_FOUND` on `src/tools/assignments.mjs`. GREEN: focused 100/100 (server, server-v2, tools-assignments, assignments) and `npm test` 1649/1649 (parent-observed); live stdio smoke of 4 tools (writer).
 - [ ] **T3 — Context budget.** Accumulate per-turn tokens into the assignment; warn at a configurable fraction of model context; suppress turn-depth nudge for assignment turns. Route: pending.
 - [ ] **T4 — Rehydration fallback.** On `no_session`/resume failure, start a fresh session seeded with brief + last response; mark `rehydratedAt`. Route: pending.
 - [ ] **T5 — Capability fix + docs.** Correct `claude.sessionResume`; document tools in `docs/reference/tools.md`, README, CHANGELOG. Route: pending.
@@ -73,4 +73,4 @@ Out of scope: copilot resume, a claude CLI adapter, long-lived CLI processes, ro
 
 ## Next step
 
-T2 — MCP tools over startJob/job_reply (jobId must be reserved before beginTurn).
+T3 — token-based context budget.

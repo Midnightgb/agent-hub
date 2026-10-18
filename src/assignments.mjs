@@ -164,6 +164,23 @@ export function completeTurn(id, { jobId, sessionId, tokens } = {}, env = proces
   }))
 }
 
+/**
+ * Hand the turn lock from `fromJobId` to `toJobId` without releasing it.
+ * jobIds are allocated by the job store inside startJob, so callers take the
+ * lock with a reservation token first and rebind it to the real jobId as soon
+ * as startJob returns. Only the current holder may rebind.
+ */
+export function rebindTurn(id, fromJobId, toJobId, env = process.env) {
+  requireText(fromJobId, 'fromJobId')
+  requireText(toJobId, 'toJobId')
+  const now = new Date().toISOString()
+  return toResult(updateAssignmentAtomic(getDb(env), id, (row) => {
+    const refusal = refuseUnlessLockHeldBy(row, fromJobId)
+    if (refusal) return refusal
+    return { ok: true, patch: { in_flight_job_id: toJobId, updated_at: now } }
+  }))
+}
+
 /** Release the turn lock without advancing the assignment (failed/cancelled turn). */
 export function abortTurn(id, jobId, env = process.env) {
   requireText(jobId, 'jobId')

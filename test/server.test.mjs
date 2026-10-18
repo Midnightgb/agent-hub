@@ -60,6 +60,10 @@ test('the server boots over stdio and exposes the full tool set', async () => {
         'learning_propose',
         'plan_task',
         'route',
+        'task_assign',
+        'task_close',
+        'task_continue',
+        'task_status',
       ]
     )
   } finally {
