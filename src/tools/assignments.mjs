@@ -34,6 +34,7 @@ import { startJob as defaultStartJob } from '../jobrunner.mjs'
 import { readResult as defaultReadResult, responsePath } from '../jobstore.mjs'
 import { readDiscovery as defaultReadDiscovery } from '../discovery.mjs'
 import { assignmentDefaultContextTokens, assignmentContextWarnFraction } from '../config.mjs'
+import { readSessionOccupancy } from '../adapters/opencode.mjs'
 import { TASK_TYPES } from '../schemas.mjs'
 import { delegateTool, jobReplyTool } from './jobs.mjs'
 import {
@@ -226,7 +227,10 @@ function jobSummary(job) {
  * or a stale reservation, is released without advancing.
  * Returns the current record, or null when the id is unknown.
  */
-export function reconcileAssignment(id, { env = process.env, readResultFn = defaultReadResult, now = Date.now } = {}) {
+export function reconcileAssignment(
+  id,
+  { env = process.env, readResultFn = defaultReadResult, now = Date.now, readSessionOccupancyFn = readSessionOccupancy } = {},
+) {
   const assignment = getAssignment(id, env)
   if (!assignment || assignment.status !== 'active' || !assignment.inFlightJobId) return assignment
 
@@ -240,11 +244,21 @@ export function reconcileAssignment(id, { env = process.env, readResultFn = defa
   if (!job) {
     abortTurn(id, lock, env)
   } else if (TERMINAL_STATUSES.has(job.status)) {
+    let contextTokens = contextTokenCount(job.tokens)
+    // A resumed opencode turn can finish without a step_finish event, hence
+    // without tokens; the session export still knows the real occupancy.
+    if (contextTokens == null && assignment.agent === 'opencode' && job.sessionId) {
+      try {
+        contextTokens = readSessionOccupancyFn(job.sessionId, { env }) ?? null
+      } catch {
+        contextTokens = null
+      }
+    }
     completeTurn(id, {
       jobId: lock,
       sessionId: job.sessionId ?? null,
       tokens: tokenCount(job.tokens),
-      contextTokens: contextTokenCount(job.tokens),
+      contextTokens,
     }, env)
   }
   return getAssignment(id, env)

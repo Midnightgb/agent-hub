@@ -10,6 +10,8 @@ import {
   paths,
   ASSIGNMENT_DEFAULT_CONTEXT_TOKENS,
   ASSIGNMENT_CONTEXT_WARN_FRACTION,
+  ASSIGNMENT_EXPORT_TIMEOUT_MS,
+  assignmentExportTimeoutMs,
   assignmentDefaultContextTokens,
   assignmentContextWarnFraction,
 } from '../src/config.mjs'
@@ -85,5 +87,14 @@ test('assignment context budget is env-overridable; invalid values fall back to 
   }
   for (const bad of ['', 'abc', '0', '-0.1', '1.5']) {
     assert.equal(assignmentContextWarnFraction({ AGENT_HUB_ASSIGNMENT_CONTEXT_WARN_FRACTION: bad }), 0.6)
+  }
+})
+
+test('assignment session export timeout defaults to 10s, is env-overridable, invalid values fall back', () => {
+  assert.equal(ASSIGNMENT_EXPORT_TIMEOUT_MS, 10000)
+  assert.equal(assignmentExportTimeoutMs({}), 10000)
+  assert.equal(assignmentExportTimeoutMs({ AGENT_HUB_ASSIGNMENT_EXPORT_TIMEOUT_MS: '2500' }), 2500)
+  for (const bad of ['', 'abc', '0', '-1', '1.5']) {
+    assert.equal(assignmentExportTimeoutMs({ AGENT_HUB_ASSIGNMENT_EXPORT_TIMEOUT_MS: bad }), 10000)
   }
 })

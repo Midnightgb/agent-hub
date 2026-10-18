@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sessionIdFrom, buildArgv, stdinFor, parseResult, classifyError, listModels, interruptArgv } from '../../src/adapters/opencode.mjs'
+import { sessionIdFrom, buildArgv, stdinFor, parseResult, classifyError, listModels, interruptArgv, sessionExportArgv, opencodeOccupancyFromExport, readSessionOccupancy } from '../../src/adapters/opencode.mjs'
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'opencode')
 const read = (name) => fs.readFileSync(path.join(FIXTURES, name), 'utf8')
@@ -319,4 +319,53 @@ test('classifyError also recognizes a "Variant unavailable" message by text even
 test('classifyError still reports an unrecognised error event as a crash', () => {
   const stdout = JSON.stringify({ type: 'error', sessionID: 'ses_t', error: { type: 'unknown', message: 'Tool execution exploded' } })
   assert.equal(classifyError(stdout).kind, 'crash')
+})
+
+test('sessionExportArgv builds the session export call', () => {
+  assert.deepEqual(sessionExportArgv('ses_abc'), ['session', 'export', 'ses_abc'])
+})
+
+test('opencodeOccupancyFromExport uses the last message with tokens: input + cache read + cache write', () => {
+  const exp = {
+    info: { tokens: { input: 999999, cache: { read: 999999, write: 0 } } },
+    messages: [
+      { info: { role: 'user' } },
+      { info: { role: 'assistant', tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 20, write: 0 } } } },
+      { info: { role: 'assistant', tokens: { input: 1076, output: 29, reasoning: 120, cache: { read: 35057, write: 0 } } } },
+      { info: { role: 'user' } },
+    ],
+  }
+  assert.equal(opencodeOccupancyFromExport(exp), 36133)
+})
+
+test('opencodeOccupancyFromExport also reads tokens placed directly on the message', () => {
+  assert.equal(opencodeOccupancyFromExport({ messages: [{ tokens: { input: 5, cache: { read: 2, write: 3 } } }] }), 10)
+})
+
+test('opencodeOccupancyFromExport treats missing parts as 0 and tolerates garbage', () => {
+  assert.equal(opencodeOccupancyFromExport({ messages: [{ info: { tokens: { input: 7 } } }] }), 7)
+  assert.equal(opencodeOccupancyFromExport({ messages: [{ info: { tokens: { cache: { read: 4 } } } }] }), 4)
+  for (const bad of [null, undefined, 'x', 3, {}, { messages: [] }, { messages: 'x' }, { messages: [null, {}, { info: {} }] },
+    { messages: [{ info: { tokens: {} } }] }, { messages: [{ info: { tokens: { input: 'a' } } }] }]) {
+    assert.equal(opencodeOccupancyFromExport(bad), null)
+  }
+})
+
+test('readSessionOccupancy runs the export argv with a timeout and parses the occupancy', () => {
+  const calls = []
+  const execFn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts })
+    return JSON.stringify({ messages: [{ info: { tokens: { input: 1, cache: { read: 2, write: 3 } } } }] })
+  }
+  assert.equal(readSessionOccupancy('ses_x', { execFn, timeoutMs: 1234, env: { A: '1' } }), 6)
+  assert.equal(calls[0].cmd, 'opencode')
+  assert.deepEqual(calls[0].args, ['session', 'export', 'ses_x'])
+  assert.equal(calls[0].opts.timeout, 1234)
+  assert.ok(calls[0].opts.maxBuffer >= 64 * 1024 * 1024)
+})
+
+test('readSessionOccupancy is fail-soft: exec error, invalid JSON, missing session id all give null', () => {
+  assert.equal(readSessionOccupancy('ses_x', { execFn: () => { throw new Error('ETIMEDOUT') } }), null)
+  assert.equal(readSessionOccupancy('ses_x', { execFn: () => 'not json' }), null)
+  assert.equal(readSessionOccupancy('', { execFn: () => '{}' }), null)
 })

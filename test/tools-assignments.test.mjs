@@ -122,6 +122,53 @@ describe('context budget', () => {
     assert.equal(a.tokensUsed, 4300)
   })
 
+  describe('opencode occupancy from session export', () => {
+    test('uses the exported occupancy when the opencode turn reported no tokens', async () => {
+      const env = tmpEnv()
+      const first = await assignAndFinish(env, {}, { tokens: null, sessionId: 'ses-9' })
+      const calls = []
+      const readSessionOccupancyFn = (sessionId) => { calls.push(sessionId); return 36133 }
+      const a = reconcileAssignment(first.assignmentId, { env, readSessionOccupancyFn })
+      assert.deepEqual(calls, ['ses-9'])
+      assert.equal(a.contextTokens, 36133)
+      assert.equal(a.tokensUsed, 0)
+    })
+
+    test('keeps the reported tokens and does not export when the turn reported them', async () => {
+      const env = tmpEnv()
+      const first = await assignAndFinish(env, {}, { tokens: 1200 })
+      const readSessionOccupancyFn = () => { throw new Error('must not be called') }
+      assert.equal(reconcileAssignment(first.assignmentId, { env, readSessionOccupancyFn }).contextTokens, 1200)
+    })
+
+    test('an export failure leaves the recorded occupancy unchanged', async () => {
+      const env = tmpEnv()
+      const first = await assignAndFinish(env, {}, { tokens: 1200 })
+      reconcileAssignment(first.assignmentId, { env })
+      const { startJobFn } = fakeStarter(env)
+      const next = await taskContinueTool({ assignmentId: first.assignmentId, message: 'more', startJobFn, env })
+      finishJob(next.jobId, env, { tokens: null })
+      assert.equal(reconcileAssignment(first.assignmentId, { env, readSessionOccupancyFn: () => null }).contextTokens, 1200)
+    })
+
+    test('a throwing export is swallowed (fail-soft)', async () => {
+      const env = tmpEnv()
+      const first = await assignAndFinish(env, {}, { tokens: null })
+      const a = reconcileAssignment(first.assignmentId, { env, readSessionOccupancyFn: () => { throw new Error('boom') } })
+      assert.equal(a.inFlightJobId, null)
+      assert.equal(a.contextTokens, null)
+    })
+
+    test('agy and codex turns without tokens never call the export', async () => {
+      for (const agent of ['agy', 'codex']) {
+        const env = tmpEnv()
+        const first = await assignAndFinish(env, { agent, model: 'default' }, { tokens: null })
+        const readSessionOccupancyFn = () => { throw new Error('must not be called') }
+        assert.equal(reconcileAssignment(first.assignmentId, { env, readSessionOccupancyFn }).contextTokens, null)
+      }
+    })
+  })
+
   test('a turn without token data leaves the recorded occupancy unchanged', async () => {
     const env = tmpEnv()
     const first = await assignAndFinish(env)

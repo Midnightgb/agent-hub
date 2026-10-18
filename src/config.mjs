@@ -80,6 +80,17 @@ export function assignmentContextWarnFraction(env = process.env) {
   return Number.isFinite(value) && value > 0 && value <= 1 ? value : ASSIGNMENT_CONTEXT_WARN_FRACTION
 }
 
+/**
+ * Upper bound on `opencode session export` when an assignment turn reported
+ * no tokens (override: AGENT_HUB_ASSIGNMENT_EXPORT_TIMEOUT_MS, positive integer ms).
+ */
+export const ASSIGNMENT_EXPORT_TIMEOUT_MS = 10_000
+
+export function assignmentExportTimeoutMs(env = process.env) {
+  const value = Number(env?.AGENT_HUB_ASSIGNMENT_EXPORT_TIMEOUT_MS)
+  return Number.isInteger(value) && value > 0 ? value : ASSIGNMENT_EXPORT_TIMEOUT_MS
+}
+
 /** Approved learnings injected into one prompt, and the max length of each (mirrored in schemas.mjs). */
 export const LEARNINGS_MAX = 3
 export const LEARNING_TEXT_MAX = 300

@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process'
 import { parseJsonl } from './base.mjs'
+import { assignmentExportTimeoutMs } from '../config.mjs'
 
 export const id = 'opencode'
 export const cmd = 'opencode'
@@ -55,6 +57,57 @@ export function stdinFor({ prompt }) {
  */
 export function interruptArgv({ sessionId }) {
   return ['api', 'session.interrupt', '--param', `sessionID=${sessionId}`]
+}
+
+/** argv printing a session's full JSON export (`{info, messages}`) on stdout; works from any cwd. */
+export function sessionExportArgv(sessionId) {
+  return ['session', 'export', sessionId]
+}
+
+const count = (n) => (Number.isFinite(n) && n >= 0 ? n : 0)
+
+/**
+ * Context occupancy from a `session export` document: the LAST message that
+ * carries a `tokens` object, as input + cache.read + cache.write (missing
+ * parts count as 0). The document-level `info.tokens` is a cumulative total
+ * and is deliberately ignored. Returns null when no message has usable
+ * tokens; never throws.
+ */
+export function opencodeOccupancyFromExport(exportJson) {
+  const messages = exportJson?.messages
+  if (!Array.isArray(messages)) return null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const tokens = messages[i]?.info?.tokens ?? messages[i]?.tokens
+    if (!tokens || typeof tokens !== 'object') continue
+    const parts = [tokens.input, tokens.cache?.read, tokens.cache?.write]
+    if (!parts.some((n) => Number.isFinite(n))) continue
+    return parts.reduce((sum, n) => sum + count(n), 0)
+  }
+  return null
+}
+
+// Long sessions export large JSON; cap the stdout buffer well above that.
+const EXPORT_MAX_BUFFER = 64 * 1024 * 1024
+
+/**
+ * Fail-soft, synchronous read of a session's context occupancy through
+ * `opencode session export`. Synchronous like the reconcile path that calls
+ * it; the timeout bounds it. Returns null on any error, timeout or invalid JSON.
+ */
+export function readSessionOccupancy(sessionId, { execFn = execFileSync, timeoutMs, env = process.env } = {}) {
+  if (!sessionId) return null
+  try {
+    const stdout = execFn(cmd, sessionExportArgv(sessionId), {
+      encoding: 'utf8',
+      timeout: timeoutMs ?? assignmentExportTimeoutMs(env),
+      maxBuffer: EXPORT_MAX_BUFFER,
+      env,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return opencodeOccupancyFromExport(JSON.parse(stdout))
+  } catch {
+    return null
+  }
 }
 
 export function parseResult(stdout) {
