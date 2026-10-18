@@ -74,11 +74,15 @@ target state for later slices); file:line refs ground what already exists.
 
 ## 5. Read purity / write ownership
 
-- Read purity: snapshot AFTER gate+lock, diff at terminal transition; a
-  modifying `read` job fails as `read_mode_violation` (output kept for
-  inspection), non-git cwd = `unverifiable`, never a violation
-  (`src/jobrunner.mjs` `takeSnapshotFn` / `diffSnapshotsFn`,
-  `src/readguard.mjs` `takeSnapshot`). `.env` / `JULES_API_KEY` never reach child
+- Read purity: snapshot AFTER gate+lock, diff at terminal transition; the
+  guard level comes from the adapter's `readPolicy` (`src/scratchcopy.mjs`
+  `resolveReadIsolation`). With the `strict` guard a modifying `read` job fails
+  as `read_mode_violation` (output kept for inspection); with `warn`
+  (enforced-read CLIs, or agy in its scratch copy) the change is recorded as
+  `readGuard` and a warning. A scratch-policy job (agy) runs in a hub-owned
+  detached worktree and never writes the caller's tree. Non-git cwd =
+  `unverifiable`, never a violation (`src/jobrunner.mjs` `takeSnapshotFn` /
+  `diffSnapshotsFn`, `src/readguard.mjs` `takeSnapshot`). `.env` / `JULES_API_KEY` never reach child
   CLIs (`src/sandbox.mjs` env filtering).
 - Write ownership: `mode:write` requires secondary `git worktree add`
   checkout or allowlist (`src/worktree.mjs` `checkWriteAllowed`); single-writer lock per

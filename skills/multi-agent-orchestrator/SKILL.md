@@ -19,7 +19,9 @@ metadata:
 Use when a subtask is bounded and read-heavy (recon, call-chain trace, artifact summary,
 second opinion, adversarial review) and the useful answer is short relative to what must be
 read to produce it. Also use for cheap/free-quota work (triage, GitHub-context calls,
-mechanical writes in an isolated worktree) to preserve Claude's own quota.
+mechanical writes in an isolated worktree) to preserve Claude's own quota. Read work needs no
+worktree: fan it out in your own checkout, the way you would launch parallel subagents (see
+"Parallel reads" below).
 
 Do **not** delegate: a judgment you will have to re-verify by reading the code yourself (you
 pay twice); anything whose answer is inherently long; anything touching secrets/`.env`/tokens;
@@ -58,10 +60,13 @@ agents_status → route → delegate → job_wait / job_status → job_result �
    per agent/model/mode/taskType beat a guess.
    
    **IMPORTANT**: Before delegating, check `agents_quota` (or the `quota` annotation on `route`'s returned agents). If a chosen agent is exhausted, TELL THE USER with the reset time instead of delegating to it. agent-hub does not skip exhausted agents automatically — the human decides whether to switch agents, wait, or upgrade.
-3. `delegate({agent, model, task, cwd, mode?, timeoutS?, title?, variant?, taskType?, verify?})` —
+3. `delegate({agent, model, task, cwd, mode?, timeoutS?, title?, variant?, taskType?, verify?, isolation?, output?})` —
    `agent` is `'agy'|'opencode'|'copilot'`. Returns `{jobId, status:'queued'}` immediately. `task`
    must name the output shape and a line budget (see Prompt-shaping below). `mode:'write'`
-   requires `cwd` to be a secondary `git worktree add` checkout or an allowlisted path. `variant`
+   requires `cwd` to be a secondary `git worktree add` checkout or an allowlisted path; read mode
+   runs in your own checkout (`isolation`, default `auto`: agy in a hub-managed scratch copy,
+   copilot/codex/opencode in place). `output:'review'` gets findings back as JSON in
+   `job_result.review`. `variant`
    is opencode's reasoning effort (minimal/low/medium/high/max); ignored by agy/copilot. Muse
    Spark 1.3 defaults to `high` from the model registry when `variant` is omitted. Pass the same
    `taskType` you gave `route` — it feeds metrics, adaptive timeouts and learnings. **Never ask
@@ -72,7 +77,8 @@ agents_status → route → delegate → job_wait / job_status → job_result �
    succeeds, and records `verification` on the job (see "Verification" below and
    `../../docs/verification.md`).
 4. `job_wait({jobId, timeoutS<=60})` to block until terminal, or `job_status({jobId})` to poll
-   without blocking. Both return `{status, errorKind, error, ...}`.
+   without blocking. Both return `{status, errorKind, error, ...}`. For a fan-out, pass
+   `jobIds:[...]` instead (`until:'any'` to take each as it finishes) and re-call with `pending`.
 5. `job_result({jobId, maxLines?})` — head of the response (default 20 lines) plus
    `{truncated, fullPath, tokens, costUsd, sessionId, verification}`. Read `fullPath` only if the
    head is insufficient — do not default to pulling the whole file into context. `verification` is
@@ -103,13 +109,13 @@ Claude) checks the plan against the real tree before any write happens, and the 
 gets one more correction pass before it's considered done — never trust either self-report.
 
 1. **Plan.** `delegate({agent, model, task:'<propose a plan for X, do not edit anything>', cwd:
-   <worktree>, mode:'read'})` — read mode. **Do not assume the CLI honors it.** Verified:
+   <your checkout>, mode:'read'})` — read mode. **Do not assume the CLI honors it.** Verified:
    `agy --mode plan` writes files with or without `--dangerously-skip-permissions`
-   (`opencode`'s plan agent did respect read mode in testing). The hub enforces read mode after
-   the fact with its read-mode guard: it diffs the git-visible state of `cwd` before and after
-   the turn and fails the job with `errorKind:'read_mode_violation'` if anything changed. Run
-   agy read/plan turns in a disposable git worktree you can reset, and treat that failure as
-   "the plan turn tried to edit," not as a bad plan.
+   (`opencode`'s plan agent did respect read mode in testing). That is why the hub runs agy read
+   turns in its own scratch copy of your tree (uncommitted and untracked files included,
+   removed after the turn): whatever agy writes there is discarded and listed in
+   `isolation.discardedPaths`, so your checkout is never touched and you need no worktree.
+   A non-empty `discardedPaths` means "the plan turn tried to edit," not a bad plan.
 2. **Plan review.** `job_wait`/`job_result` the plan, and check it against the actual code (not
    just internal consistency) — the real corrections seen in practice were things like "this
    validation schema already exists, reuse it," "that field starts at 0 in the legacy code, keep
@@ -302,7 +308,32 @@ PR. Say that plainly rather than reporting the task as stopped.
 The API is alpha, quotas are per account (Pro: 100 tasks/day, 15 concurrent) and
 exhaustion surfaces as `errorKind:'quota'` from a 429.
 
-## Parallel work: one worktree per block, serialize within it
+## Parallel reads: fan out in your own checkout
+
+Read jobs (recon, review, second opinion, plan) run in parallel in the checkout you are
+working in. You create no worktree and keep git to yourself. Use the same pattern as parallel
+Claude Code subagents:
+
+- **Launch all of them in one turn**, `waitMode:'none'` on `dispatch` (delegate never waits):
+  - `dispatch({taskType:'adversarial-review', fanout:true, output:'review', ...})` starts the
+    routed primary plus its declared `parallelWith` pair (`parallelJobs[]`).
+  - For N identical reviewers, call `dispatch` N times with distinct `label`s. Without a label,
+    identical calls dedupe into one job for 10 minutes.
+  - To pin exact pairs, use one `delegate` per agent.
+- **Wait once for all of them** with `job_wait({jobIds})`, then `job_result` each. Ask for
+  `output:'review'` so findings come back as JSON (`review.findings`) rather than prose you
+  have to re-parse; on `reviewError` fall back to the text.
+- **Isolation is automatic** (`isolation:'auto'`):
+  - agy runs in a hub-managed scratch copy of your tree (uncommitted and untracked files
+    included, removed after the job).
+  - copilot/codex/opencode run in place, because their CLIs enforce read-only.
+  - If you or a sibling job edit the tree meanwhile, the job still succeeds and reports
+    `readGuard.level:'warn'` with the changed paths. That is your own edit, not the reviewer's.
+    `AGENT_HUB_READGUARD=strict` restores failing on any change.
+- **Writes are different**: a write job still needs a secondary worktree (next section). Keep
+  implementation either in your own session or in one write delegate per worktree.
+
+## Parallel writes: one worktree per block, serialize within it
 
 The hub's write lock (`errorKind:'locked'`) only serializes jobs targeting the exact same `cwd` —
 it has no idea whether two *different* worktrees touch overlapping files. Observed pattern for
@@ -340,7 +371,7 @@ before you ever called `delegate` shows up in `skipped` instead (see loop step 2
 | `timeout` | agy's own `--print-timeout` fired (turn abandoned, not just slow) or the hub's hard kill hit (kill ladder sends SIGINT first — best-effort against opencode's shared background server, see the opencode reference doc — then SIGTERM, then SIGKILL) | the turn is genuinely abandoned — verified live, resuming and asking for the answer returned `UNFINISHED`, not the real answer. For opencode specifically, the hub also fires an independent, best-effort `session.interrupt` cleanup call after finalizing the job (recorded as a separate `job.interrupted` event, never changing this `errorKind`) — it does not affect what you see here. `job_result` still returns whatever partial text streamed before the cutoff. Retry via `job_reply({jobId, message:'<retry or narrower ask>'})` on the same `sessionId` rather than re-`delegate`ing cold; latency is highly variable (4s-300s+ measured) |
 | `empty` | opencode's JSON stream dropped `text`/`step_finish` (documented, nondeterministic), or agy returned `status:SUCCESS` with an empty response and no streamed text at all | retriable once, same job_reply-on-sessionId pattern as `timeout` |
 | `crash` | no valid result envelope / unexpected exit | not retriable without changing the task |
-| `read_mode_violation` | a `read`-mode job's git-visible worktree changed during the turn (verified: agy `--mode plan` writes) | the turn edited files despite read mode; inspect/reset the disposable worktree, then re-run the read turn somewhere it cannot touch anything you care about |
+| `read_mode_violation` | a `read`-mode job with the strict guard saw its git-visible tree change during the turn: an adapter without a read policy, `isolation:'in-place'` on agy, a scratch-copy fallback, or `AGENT_HUB_READGUARD=strict` | the turn (or someone else) edited files despite read mode; check `git status`, then re-run with the default `isolation:'auto'` (agy goes to a scratch copy) |
 | `orphaned` | job's process was gone when the hub restarted | dead; re-delegate |
 | `auth` | CLI not authenticated | not retriable; needs a human to log in |
 | `not_terminal` | `job_reply` called on a job that has not finished yet | wait for the parent job to reach a terminal status first |

@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `review` (or `reviewError`). `dispatch({fanout: true})` also starts the
   read-only `parallelWith` reviewer(s) of the routed chain step and returns
   them as `parallelJobs`. The `adversarial-review` prompt now uses this flow.
+- Skills: `multi-agent-orchestrator` gains "Parallel reads: fan out in your own
+  checkout" (the old worktree section now covers writes only) and
+  `agy-delegate` drops the disposable-worktree advice for agy read turns.
 - Diff stats for write-mode jobs: a GitHub-style `+X −Y · N files` summary and
   per-file table, live on Running Jobs and persisted (survives worktree
   deletion) on History. Measured from `git diff --numstat` against the
