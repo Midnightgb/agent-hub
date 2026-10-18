@@ -25,6 +25,10 @@ export const POLICY_TABLE = {
   crash: { retry: 1, resume: false, fallback: true, escalation: 'human' },
   quality: { retry: false, resume: false, fallback: true, escalation: 'verifier' },
   'write-conflict': { retry: false, resume: false, fallback: false, escalation: 'human' },
+  // T4 (opencode-live-catalog): never retry the same model#variant (it will
+  // fail identically), but DO fall back -- a different chain candidate (a
+  // different model, or the same model without that variant) may well work.
+  no_route: { retry: false, resume: false, fallback: true, escalation: 'human' },
 }
 
 /**

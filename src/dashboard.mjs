@@ -19,6 +19,7 @@ import { runCommand } from './process.mjs'
 import { computeMetrics } from './metrics.mjs'
 import { listProposals, refreshProposals, decideProposal } from './proposals.mjs'
 import { computeModelGaps } from './model-gaps.mjs'
+import { effectiveTier, computeCatalogDrift } from './catalog.mjs'
 import { listLearnings, proposeLearning, decideLearning, deleteLearning } from './learnings.mjs'
 import { jobResultTool } from './tools/jobs.mjs'
 import { JobRecord } from './schemas.mjs'
@@ -251,12 +252,18 @@ let invalidJobsWarned = false
 /** State for GET /api/state: agents (from the preflight cache), jobs, and the last 200 events (subagents included). */
 export function buildState({ env = process.env } = {}) {
   const discovery = readDiscovery(env)
-  const agents = Object.values(readCache(env)).map((a) => ({
-    ...a,
-    dataPolicy: MODEL_REGISTRY[a.agent]?.[a.model]?.dataPolicy ?? 'unknown',
-    binPath: discovery[a.agent]?.binPath ?? null,
-    cliVersion: discovery[a.agent]?.version ?? null,
-  }))
+  const agents = Object.values(readCache(env)).map((a) => {
+    const { tier, tierSource, catalogCheckedAt } = effectiveTier({ agent: a.agent, model: a.model, discovery, registry: MODEL_REGISTRY })
+    return {
+      ...a,
+      dataPolicy: MODEL_REGISTRY[a.agent]?.[a.model]?.dataPolicy ?? 'unknown',
+      binPath: discovery[a.agent]?.binPath ?? null,
+      cliVersion: discovery[a.agent]?.version ?? null,
+      tier,
+      tierSource,
+      catalogCheckedAt,
+    }
+  })
   // `/api/state` is validated by the client as ONE payload (`StateResponse`,
   // jobs: JobRecord[]). One record that does not satisfy JobRecord used to
   // blank every job-list view, so drop exactly the invalid ones here instead.
@@ -729,7 +736,8 @@ export function createServer({ env = process.env, commandRunner = runCommand, di
 
     if (url.pathname === '/api/proposals' && req.method === 'GET') {
       const { unmapped } = computeModelGaps({ discovery: readDiscovery(env), map: DELEGATION_MAP, registry: MODEL_REGISTRY })
-      sendJson(res, 200, { proposals: listProposals({}, env), unmapped })
+      const drift = computeCatalogDrift({ discovery: readDiscovery(env), map: DELEGATION_MAP, registry: MODEL_REGISTRY })
+      sendJson(res, 200, { proposals: listProposals({}, env), unmapped, drift })
       return
     }
 
@@ -737,7 +745,8 @@ export function createServer({ env = process.env, commandRunner = runCommand, di
       try {
         const proposals = refreshProposals({ env, map: DELEGATION_MAP, discovery: readDiscovery(env), registry: MODEL_REGISTRY })
         const { unmapped } = computeModelGaps({ discovery: readDiscovery(env), map: DELEGATION_MAP, registry: MODEL_REGISTRY })
-        sendJson(res, 200, { proposals, unmapped })
+        const drift = computeCatalogDrift({ discovery: readDiscovery(env), map: DELEGATION_MAP, registry: MODEL_REGISTRY })
+        sendJson(res, 200, { proposals, unmapped, drift })
       } catch (error) {
         sendError(res, domainError(error))
       }

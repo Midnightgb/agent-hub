@@ -125,6 +125,37 @@ test('POST /api/proposals/refresh recomputes from metrics and returns the stored
   }
 })
 
+test('GET /api/proposals and POST /api/proposals/refresh include a drift list from a fresh, error-free opencode discovery row', async () => {
+  const env = { AGENT_HUB_HOME: tmpHome() }
+  writeJsonAtomic(paths(env).discoveryFile, {
+    opencode: {
+      agent: 'opencode',
+      cmd: 'opencode',
+      binPath: '/bin/opencode',
+      version: 'opencode v2.0.18',
+      // opencode/mimo-v2.5-free is pinned tier:'free' in MODEL_REGISTRY but is
+      // no longer in this live catalog -- a "vanished" drift item.
+      models: [{ id: 'opencode/big-pickle', cost: [{ input: 0, output: 0 }] }],
+      checkedAt: new Date().toISOString(),
+      error: null,
+    },
+  })
+  const server = createServer({ env })
+  const port = await listen(server)
+  try {
+    const get = await request(port, '/api/proposals')
+    assert.equal(get.status, 200)
+    assert.ok(Array.isArray(get.body.drift))
+    assert.ok(get.body.drift.some((d) => d.type === 'vanished' && d.agent === 'opencode' && d.model === 'opencode/mimo-v2.5-free'))
+
+    const refresh = await request(port, '/api/proposals/refresh', { method: 'POST', body: {} })
+    assert.equal(refresh.status, 200)
+    assert.ok(refresh.body.drift.some((d) => d.type === 'vanished' && d.model === 'opencode/mimo-v2.5-free'))
+  } finally {
+    server.close()
+  }
+})
+
 test('GET /api/proposals and POST /api/proposals/refresh include an unmapped list of catalog models with no safe taskType', async () => {
   const env = { AGENT_HUB_HOME: tmpHome() }
   writeJsonAtomic(paths(env).discoveryFile, {

@@ -158,9 +158,31 @@ export function classifyError(stdout, exitInfo = {}) {
     // gets {error:{message:"Transport"}} at once. The model did nothing
     // wrong, so this must not count as a crash against it; the transport
     // policy retries and the transport breaker class tolerates bursts.
+    //
+    // T4 (opencode-live-catalog, job 0ebdbb0a): a second real capture had
+    // error.message = "Transport: The socket connection was closed
+    // unexpectedly. For more information, pass `verbose: true` ..." --
+    // the original `^transport$` only matched the bare word, and "socket
+    // connection was closed" is worded differently from "socket hang up",
+    // so this longer message fell through to the generic crash branch
+    // below. Extending the SAME pattern here (not a parallel branch) so the
+    // two real captures and the synthetic fixtures all agree on one rule.
     const errorMessage = String(errorEvent.error?.message ?? '').toLowerCase()
-    if (/^transport$|econnreset|econnrefused|socket hang up|fetch failed/.test(errorMessage)) {
+    if (/^transport(:|$)|econnreset|econnrefused|socket hang up|socket connection was closed|fetch failed/.test(errorMessage)) {
       return { kind: 'transport', retriable: true, message: 'opencode lost its connection to the opencode service (transport error)' }
+    }
+    // T4: an unsupported reasoning-effort variant reaching the live CLI
+    // (src/catalog.mjs's validateVariant should normally drop it before
+    // spawn, but stale/missing catalog data can still let one through, or
+    // the model can have no route to any provider for other reasons).
+    // Non-retriable -- retrying the exact same model#variant would fail
+    // identically every time -- and distinct from 'crash' so it is never
+    // mistaken for the model itself misbehaving. The original message is
+    // preserved verbatim (not replaced with a generic string) since it
+    // names the offending model/variant.
+    const errorType = String(errorEvent.error?.type ?? '')
+    if (errorType === 'provider.no-route' || /provider\.no-route|variant unavailable/.test(errorMessage)) {
+      return { kind: 'no_route', retriable: false, message: errorEvent.error?.message ?? 'opencode reported provider.no-route' }
     }
     return { kind: 'crash', retriable: false, message: 'opencode reported an error event' }
   }

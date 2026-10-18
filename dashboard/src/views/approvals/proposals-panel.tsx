@@ -32,7 +32,7 @@ import {
   useProposalsQuery,
   useRefreshProposalsMutation,
 } from "@/lib/queries"
-import type { ProposalT, UnmappedModelT } from "@/lib/types"
+import type { CatalogDriftItemT, ProposalT, UnmappedModelT } from "@/lib/types"
 
 type Pair = ProposalT["fromOrder"][number]
 
@@ -240,6 +240,52 @@ function UnmappedModelsCard({ models }: { models: UnmappedModelT[] }) {
   )
 }
 
+/** Human-readable summary for one catalog-vs-registry drift item (src/catalog.mjs computeCatalogDrift). Report only -- never changes routing. */
+function driftSummary(item: CatalogDriftItemT): string {
+  switch (item.type) {
+    case "vanished":
+      return `${item.model} is pinned in the registry but no longer in the live catalog.`
+    case "now_paid":
+      return `${item.model} is marked free in the registry, but the live catalog now charges for it.`
+    case "new_free":
+      return `${item.model} is free in the live catalog but not yet in the registry.`
+    case "variant_unavailable":
+      return `${item.model} variant "${item.variant}" is pinned but no longer offered by the live catalog.`
+    default:
+      return item.model
+  }
+}
+
+function DriftCard({ items }: { items: CatalogDriftItemT[] }) {
+  if (items.length === 0) return null
+  return (
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle className="text-sm">Catalog drift</CardTitle>
+        <CardDescription>
+          Differences between the live opencode catalog and the model registry/routing map.
+          Report only — nothing here changes routing.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul className="flex flex-col gap-2 text-sm">
+          {items.map((item, index) => (
+            <li
+              key={`${item.agent}:${item.model}:${item.type}:${index}`}
+              className="flex min-w-0 items-start gap-2"
+            >
+              <Badge variant="outline" className="shrink-0">
+                {item.type}
+              </Badge>
+              <span className="truncate">{driftSummary(item)}</span>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function ProposalsPanel() {
   const { data, isLoading } = useProposalsQuery()
   const refresh = useRefreshProposalsMutation()
@@ -249,6 +295,7 @@ export function ProposalsPanel() {
 
   const proposals = data?.proposals ?? []
   const unmapped = data?.unmapped ?? []
+  const drift = data?.drift ?? []
   const filtered =
     statusFilter === "pending" ? proposals.filter((p) => p.status === "pending") : proposals
 
@@ -317,6 +364,7 @@ export function ProposalsPanel() {
       )}
 
       <UnmappedModelsCard models={unmapped} />
+      <DriftCard items={drift} />
 
       <ConfirmDialog
         open={accepting !== null}

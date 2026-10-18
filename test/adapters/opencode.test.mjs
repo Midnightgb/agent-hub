@@ -283,6 +283,39 @@ test('classifyError treats connection-level error messages as transport', () => 
   }
 })
 
+test('classifyError recognizes the real captured "Transport: ...socket connection was closed" message as retriable transport, not a crash (T4, job 0ebdbb0a: narrower upstream pattern only matched the bare "Transport" string)', () => {
+  const stdout = JSON.stringify({
+    type: 'error',
+    sessionID: 'ses_t',
+    error: {
+      type: 'unknown',
+      message:
+        'Transport: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to the client constructor.',
+    },
+  })
+  const result = classifyError(stdout)
+  assert.equal(result.kind, 'transport')
+  assert.equal(result.retriable, true)
+})
+
+test('classifyError classifies a provider.no-route "Variant unavailable" error as a non-retriable no_route kind, with the original message preserved (T4, odd/tasks/opencode-live-catalog.md)', () => {
+  const message = 'provider.no-route: Variant unavailable for opencode/nemotron-3-ultra-free: high'
+  const stdout = JSON.stringify({ type: 'error', sessionID: 'ses_t', error: { type: 'provider.no-route', message } })
+  const result = classifyError(stdout)
+  assert.equal(result.kind, 'no_route')
+  assert.equal(result.retriable, false)
+  assert.equal(result.message, message)
+})
+
+test('classifyError also recognizes a "Variant unavailable" message by text even when error.type is not literally "provider.no-route"', () => {
+  const message = 'provider.no-route: Variant unavailable for opencode/nemotron-3-ultra-free: high'
+  const stdout = JSON.stringify({ type: 'error', sessionID: 'ses_t', error: { type: 'unknown', message } })
+  const result = classifyError(stdout)
+  assert.equal(result.kind, 'no_route')
+  assert.equal(result.retriable, false)
+  assert.equal(result.message, message)
+})
+
 test('classifyError still reports an unrecognised error event as a crash', () => {
   const stdout = JSON.stringify({ type: 'error', sessionID: 'ses_t', error: { type: 'unknown', message: 'Tool execution exploded' } })
   assert.equal(classifyError(stdout).kind, 'crash')

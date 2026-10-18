@@ -284,4 +284,21 @@ describe("ApprovalsView", () => {
     expect(await screen.findByText("Unmapped models")).toBeTruthy()
     expect(screen.getByText("gpt-oss-999-low")).toBeTruthy()
   })
+
+  it("lists catalog drift items reported for opencode", async () => {
+    api.getProposals.mockResolvedValue({
+      proposals: [],
+      unmapped: [],
+      drift: [
+        { type: "vanished", agent: "opencode", model: "opencode/mimo-v2.5-free" },
+        { type: "variant_unavailable", agent: "opencode", model: "opencode/nemotron-3-ultra-free", variant: "high" },
+      ],
+    })
+    renderApprovals("/approvals")
+
+    expect(await screen.findByText("Catalog drift")).toBeTruthy()
+    expect(screen.getByText(/opencode\/mimo-v2\.5-free/)).toBeTruthy()
+    expect(screen.getByText(/opencode\/nemotron-3-ultra-free/)).toBeTruthy()
+    expect(screen.getByText(/high/)).toBeTruthy()
+  })
 })

@@ -2,6 +2,7 @@ import { agentsStatus as runAgentsStatus } from '../preflight.mjs'
 import { route as defaultRoute, DELEGATION_MAP, knownTaskTypes } from '../router.mjs'
 import { MODEL_REGISTRY } from '../config.mjs'
 import { readDiscovery } from '../discovery.mjs'
+import { effectiveTier } from '../catalog.mjs'
 import { runCommand } from '../process.mjs'
 import { fetchUsage } from '../quota/codexbar.mjs'
 import { quotaFor, getProvider } from '../quota/mapping.mjs'
@@ -46,22 +47,32 @@ export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), e
   // background refresh instead of blocking this call on a cold CodexBar.
   const usageByProvider = await fetchUsage({ providers: [...providers], refresh, env, mode: 'cached' })
 
-  return results.map((r) => ({
-    agent: r.agent,
-    model: r.model,
-    status: r.status,
-    reason: r.reason ?? null,
-    latencyMs: r.latencyMs ?? null,
-    quotaSignal: r.quotaSignal ?? 'unknown',
-    dataPolicy: MODEL_REGISTRY[r.agent]?.[r.model]?.dataPolicy ?? 'unknown',
-    checkedAt: r.checkedAt,
-    // Additive: sourced from discovery.json (populated at startup and by
-    // the dashboard's "Rediscover CLIs" action), null until a discovery row
-    // exists for this agent.
-    binPath: discovery[r.agent]?.binPath ?? null,
-    cliVersion: discovery[r.agent]?.version ?? null,
-    quota: quotaFor({ agent: r.agent, model: r.model }, usageByProvider),
-  }))
+  return results.map((r) => {
+    const { tier, tierSource, catalogCheckedAt } = effectiveTier({ agent: r.agent, model: r.model, discovery, registry: MODEL_REGISTRY })
+    return {
+      agent: r.agent,
+      model: r.model,
+      status: r.status,
+      reason: r.reason ?? null,
+      latencyMs: r.latencyMs ?? null,
+      quotaSignal: r.quotaSignal ?? 'unknown',
+      dataPolicy: MODEL_REGISTRY[r.agent]?.[r.model]?.dataPolicy ?? 'unknown',
+      checkedAt: r.checkedAt,
+      // Additive: sourced from discovery.json (populated at startup and by
+      // the dashboard's "Rediscover CLIs" action), null until a discovery row
+      // exists for this agent.
+      binPath: discovery[r.agent]?.binPath ?? null,
+      cliVersion: discovery[r.agent]?.version ?? null,
+      quota: quotaFor({ agent: r.agent, model: r.model }, usageByProvider),
+      // Live-catalog pricing tier (src/catalog.mjs): 'catalog' when the last
+      // successful discovery row for this agent lists the model (regardless
+      // of age), else the MODEL_REGISTRY fallback. catalogCheckedAt is that
+      // row's checkedAt when tierSource is 'catalog', else null.
+      tier,
+      tierSource,
+      catalogCheckedAt,
+    }
+  })
 }
 
 export async function routeTool({

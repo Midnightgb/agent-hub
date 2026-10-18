@@ -21,6 +21,7 @@ import type {
   Proposal,
   ProposalsResponse,
   UnmappedModel,
+  CatalogDriftItem,
   Learning,
   LearningInput,
   CloudAccountsResponse,
@@ -64,6 +65,7 @@ export type OverrideT = z.infer<typeof Override>
 export type ProposalT = z.infer<typeof Proposal>
 export type ProposalsResponseT = z.infer<typeof ProposalsResponse>
 export type UnmappedModelT = z.infer<typeof UnmappedModel>
+export type CatalogDriftItemT = z.infer<typeof CatalogDriftItem>
 export type LearningT = z.infer<typeof Learning>
 export type LearningInputT = z.infer<typeof LearningInput>
 export type AgysSnapshotResponseT = z.infer<typeof AgysSnapshotResponse>

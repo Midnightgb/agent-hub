@@ -173,6 +173,32 @@ test('buildState enriches each agent row with dataPolicy (from MODEL_REGISTRY) a
   assert.equal(row.cliVersion, '1.2.1')
 })
 
+test('buildState enriches each agent row with tier/tierSource (src/catalog.mjs effectiveTier)', async () => {
+  const home = tmpHome()
+  const env = { AGENT_HUB_HOME: home }
+  const { writeCacheEntry } = await import('../src/preflight.mjs?t=' + Date.now())
+  const { writeJsonAtomic } = await import('../src/fsutil.mjs?t=' + Date.now())
+  const { paths } = await import('../src/config.mjs?t=' + Date.now())
+
+  writeCacheEntry('opencode:opencode/big-pickle', { agent: 'opencode', model: 'opencode/big-pickle', status: 'ready', checkedAt: new Date().toISOString() }, env)
+  writeJsonAtomic(paths(env).discoveryFile, {
+    opencode: {
+      agent: 'opencode',
+      cmd: 'opencode',
+      binPath: '/bin/opencode',
+      version: 'opencode v2.0.18',
+      models: [{ id: 'opencode/big-pickle', cost: [{ input: 0, output: 0 }] }],
+      checkedAt: new Date().toISOString(),
+      error: null,
+    },
+  })
+
+  const state = buildState({ env })
+  const row = state.agents.find((a) => a.agent === 'opencode' && a.model === 'opencode/big-pickle')
+  assert.equal(row.tier, 'free')
+  assert.equal(row.tierSource, 'catalog')
+})
+
 test('buildState jobs carry variant, sessionId, parentJobId and errorKind through to the dashboard (needed to render job_reply chains and the new billing/timeout/empty error badges)', async () => {
   const env = { AGENT_HUB_HOME: tmpHome() }
   const { createJob, updateResult } = await import('../src/jobstore.mjs?t=' + Date.now())

@@ -95,6 +95,51 @@ test('agentsStatusTool with refresh:true does not await the network — quota re
   }
 })
 
+test('agentsStatusTool: tier/tierSource come from the live catalog when a fresh, error-free opencode discovery row lists the model', async () => {
+  const home = tmpHome()
+  const { writeJsonAtomic } = await import('../src/fsutil.mjs?t=' + Date.now())
+  const { paths } = await import('../src/config.mjs?t=' + Date.now())
+  writeJsonAtomic(paths({ AGENT_HUB_HOME: home }).discoveryFile, {
+    opencode: {
+      agent: 'opencode',
+      cmd: 'opencode',
+      binPath: '/bin/opencode',
+      version: 'opencode v2.0.18',
+      // opencode/mimo-v2.5-free is still pinned as tier:'free' in MODEL_REGISTRY
+      // (src/config.mjs) -- this proves the LIVE catalog cost wins, not the
+      // stale registry value.
+      models: [{ id: 'opencode/mimo-v2.5-free', cost: [{ input: 0.2, output: 0.2 }] }],
+      checkedAt: new Date().toISOString(),
+      error: null,
+    },
+  })
+
+  const { agentsStatusTool } = await fresh(home)
+  const runner = fakeRunner([
+    ['--version', { stdout: 'v', stderr: '', code: 0 }],
+    [/models|help config/, { stdout: 'x\tlabel\n', stderr: '', code: 0 }],
+  ])
+
+  const rows = await agentsStatusTool({ cwd: '/tmp', env: { AGENT_HUB_HOME: home }, commandRunner: runner })
+  const row = rows.find((r) => r.agent === 'opencode' && r.model === 'opencode/mimo-v2.5-free')
+  assert.equal(row.tier, 'paid')
+  assert.equal(row.tierSource, 'catalog')
+})
+
+test('agentsStatusTool: tier/tierSource fall back to the MODEL_REGISTRY tier when there is no fresh discovery row', async () => {
+  const home = tmpHome()
+  const { agentsStatusTool } = await fresh(home)
+  const runner = fakeRunner([
+    ['--version', { stdout: 'v', stderr: '', code: 0 }],
+    [/models|help config/, { stdout: 'opencode/mimo-v2.5-free\tlabel\n', stderr: '', code: 0 }],
+  ])
+
+  const rows = await agentsStatusTool({ cwd: '/tmp', env: { AGENT_HUB_HOME: home }, commandRunner: runner })
+  const row = rows.find((r) => r.agent === 'opencode' && r.model === 'opencode/mimo-v2.5-free')
+  assert.equal(row.tier, 'free')
+  assert.equal(row.tierSource, 'registry')
+})
+
 test('routeTool forwards default requirements, preferences and adaptive when omitted', async () => {
   const home = tmpHome()
   const { routeTool } = await fresh(home)

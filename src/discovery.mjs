@@ -69,8 +69,16 @@ export async function discoverCli(agent, { env = process.env, commandRunner = ru
   const version = (versionResult.stdout || '').trim().split(/\r?\n/)[0] || null
 
   const modelsResult = await commandRunner(adapter.cmd, modelsArgv(agent), { env, timeoutMs: 60_000 })
-  if (modelsResult.timedOut || !modelsResult.stdout) {
+  if (modelsResult.timedOut) {
     return { agent, cmd: adapter.cmd, binPath, version, models: [], checkedAt, error: 'model list timed out' }
+  }
+  if (!modelsResult.stdout) {
+    // T4 (opencode-live-catalog): an exit-0, empty-stdout response is NOT a
+    // timeout -- it's most often a cold background service (e.g. opencode's
+    // server still starting up) that answered fast with nothing. Reporting
+    // it as "timed out" was misleading and indistinguishable from a real
+    // 60s hang.
+    return { agent, cmd: adapter.cmd, binPath, version, models: [], checkedAt, error: 'model list empty (service starting?)' }
   }
 
   const models = adapter.listModels(modelsResult.stdout)

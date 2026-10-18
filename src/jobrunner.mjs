@@ -20,6 +20,8 @@ import {
 } from './diffstats.mjs'
 import { readHandoff as defaultReadHandoff } from './context.mjs'
 import { normalizeVerifyCheck, runJobVerification as defaultRunJobVerification } from './verify.mjs'
+import { readDiscovery as defaultReadDiscovery } from './discovery.mjs'
+import { validateVariant as defaultValidateVariant } from './catalog.mjs'
 
 // jobId -> { pgid, leaseToken, heartbeatTimer, leaseTtlMs } for jobs still
 // running in THIS process. Used by cancelJob for an immediate kill; the
@@ -164,6 +166,11 @@ export function startJob({
   // below, before any job record exists — "fails fast before dispatch".
   verify = null,
   runJobVerificationFn = defaultRunJobVerification,
+  // T3 (opencode-live-catalog): injectable so tests never read the real
+  // discovery.json, and so a future adapter/agent can swap in its own
+  // validation without touching startJob's body.
+  readDiscoveryFn = defaultReadDiscovery,
+  validateVariantFn = defaultValidateVariant,
 }) {
   // D2: one bad check must reject the whole call before any side effect
   // (job record, write lock, spawn) — mirrors the adapterFor(agent) throw
@@ -230,7 +237,16 @@ export function startJob({
     explicit: timeoutS,
     env,
   })
-  const effectiveVariant = resolveVariant(agent, model, variant)
+  // T3 (opencode-live-catalog): drop a variant the live catalog no longer
+  // supports (or never did) before it ever reaches the CLI as a
+  // provider.no-route failure -- an explicit `model#variant` id is validated
+  // the same way (see validateVariant's own precedence rule). A missing/
+  // errored/empty catalog, or a model the catalog doesn't list, leaves this
+  // completely unchanged (no evidence to second-guess against).
+  const requestedVariant = resolveVariant(agent, model, variant)
+  const variantCheck = validateVariantFn({ agent, model, variant: requestedVariant, discovery: readDiscoveryFn(env) })
+  model = variantCheck.model
+  const effectiveVariant = variantCheck.variant
   // agy may run through agys (multi-account profiles). Resolution is env-based
   // and SYNCHRONOUS: startJob is synchronous and delegate()/dispatch()
   // read `.job` immediately.
@@ -278,6 +294,13 @@ export function startJob({
     profileStatus: effectiveProfileStatus,
   })
   appendEvent({ kind: 'job.queued', agent, model, cwd, title, jobId: job.jobId, taskType, harness: harness ?? null, waitMode: waitMode ?? null }, { env })
+
+  // T3 (opencode-live-catalog): record the dropped-variant warning on the
+  // job record so a caller (and the dashboard) can see why the run used the
+  // model's default instead of the requested reasoning effort.
+  if (variantCheck.warning) {
+    updateResult(job.jobId, { warnings: [variantCheck.warning] }, env)
+  }
 
   // D2: persisted on the record (not just closed over) so cancelJob -- which
   // only receives a jobId -- can also see it and record a skipped reason.

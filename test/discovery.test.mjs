@@ -154,6 +154,23 @@ test('discoverCli for opencode reports "model list timed out" when its single `a
   assert.match(entry.error, /model list timed out/)
 })
 
+test('discoverCli reports a distinct "model list empty" error, not "timed out", when the CLI exits 0 with empty stdout (T4: cold background service, not a real timeout)', async () => {
+  const home = tmpHome()
+  const binDir = path.join(home, 'bin')
+  fakePathWithBinary(binDir, 'opencode')
+  const { discoverCli } = await fresh(home)
+  const runner = fakeRunner([
+    ['--version', { stdout: '2.0.18', stderr: '', code: 0 }],
+    ['api model.list', { stdout: '', stderr: '', code: 0, timedOut: false }],
+  ])
+
+  const entry = await discoverCli('opencode', { env: { PATH: binDir }, commandRunner: runner })
+
+  assert.deepEqual(entry.models, [])
+  assert.match(entry.error, /model list empty/)
+  assert.doesNotMatch(entry.error, /timed out/)
+})
+
 test('runDiscovery writes discovery.json with one row per requested agent and never throws on a partial failure', async () => {
   const home = tmpHome()
   const binDir = path.join(home, 'bin')

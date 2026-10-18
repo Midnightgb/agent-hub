@@ -23,6 +23,21 @@ test('billing and auth never retry and escalate to a human', () => {
   assert.equal(policyFor('auth').escalation, 'human')
 })
 
+// T4 (opencode-live-catalog): an opencode adapter classifyError() kind of
+// 'no_route' (provider.no-route / "Variant unavailable") must be its own
+// taxonomy category, not fall through the text heuristics into 'crash' --
+// retrying the exact same model#variant would fail identically every time,
+// and it must never count against the model as if it had actually crashed.
+test('classifyError(taxonomy) treats an explicit kind:"no_route" as its own category, never falling through to crash', () => {
+  assert.equal(classifyError('provider.no-route: Variant unavailable for opencode/nemotron-3-ultra-free: high', { kind: 'no_route' }), 'no_route')
+})
+
+test('policyFor("no_route") never retries and escalates to a human (unsupported variant will never succeed on retry)', () => {
+  const policy = policyFor('no_route')
+  assert.equal(policy.retry, false)
+  assert.equal(policy.escalation, 'human')
+})
+
 test('recoveryStageOrder defaults to retry -> resume -> fallback -> escalate', () => {
   assert.deepEqual(
     recoveryStageOrder({}).map((s) => s.name),

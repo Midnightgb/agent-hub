@@ -11,6 +11,11 @@ export const ERROR_TAXONOMY = {
   transport: { retry: true },
   crash: { retry: false },
   quality: { retry: false },
+  // T4 (opencode-live-catalog): an unsupported reasoning-effort variant
+  // (opencode's provider.no-route / "Variant unavailable"). Retrying the
+  // exact same model#variant would fail identically every time, and this
+  // must never be mistaken for the model itself crashing.
+  no_route: { retry: false },
 }
 
 /**

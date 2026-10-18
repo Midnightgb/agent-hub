@@ -47,7 +47,7 @@ import {
 } from './schemas.mjs'
 
 const VERSION = '2.1.0'
-const TESTED_VERSIONS = { agy: '1.2.1', opencode: '2.0.10', copilot: '1.0.31', codex: '0.154.0' }
+const TESTED_VERSIONS = { agy: '1.2.1', opencode: '2.0.18', copilot: '1.0.31', codex: '0.154.0' }
 
 const log = (...args) => console.error('[agent-hub]', ...args)
 

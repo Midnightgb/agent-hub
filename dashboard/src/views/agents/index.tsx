@@ -39,7 +39,7 @@ import {
   useQuotaQuery,
 } from "@/lib/queries"
 import { breakerFor, overrideFor } from "@/lib/badges"
-import { formatLatency, formatModel } from "@/lib/format"
+import { formatAge, formatLatency, formatModel } from "@/lib/format"
 import { TONE_BADGE_CLASS } from "@/lib/tone"
 import { cn } from "@/lib/utils"
 import type { AgentRow, DerivedState } from "@/lib/types"
@@ -222,6 +222,32 @@ export function AgentsView() {
       header: "Latency",
       className: "text-right tabular-nums",
       cell: (row) => formatLatency(row.latencyMs),
+    },
+    {
+      key: "tier",
+      header: "Tier",
+      cell: (row) => {
+        if (!row.tier) return <span className="text-muted-foreground">—</span>
+        // A catalog-sourced tier can be based on a discovery row that is
+        // hours old (discovery.json is only refreshed at startup or an
+        // explicit dashboard refresh, never on a fixed interval) -- show
+        // that age instead of presenting it as a live read.
+        const title =
+          row.tierSource === "catalog"
+            ? `source: catalog · checked ${formatAge(row.catalogCheckedAt)}`
+            : row.tierSource
+              ? `source: ${row.tierSource}`
+              : undefined
+        return (
+          <Badge
+            variant="outline"
+            title={title}
+            className={row.tier === "free" ? cn("border-transparent", TONE_BADGE_CLASS.ready) : undefined}
+          >
+            {row.tier}
+          </Badge>
+        )
+      },
     },
     {
       key: "dataPolicy",

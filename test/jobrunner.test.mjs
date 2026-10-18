@@ -287,6 +287,110 @@ test('startJob passes {model,prompt,cwd,mode,timeoutS} through the REAL adapterF
   assert.equal(ocWrite.opts.stdin, 'hi', 'opencode write mode must also get the prompt on stdin')
 })
 
+// --- T3 (opencode-live-catalog): variant validation against the live catalog before spawn ---
+
+const MUSE_SPARK = 'opencode/muse-spark-1.3-contributor-free' // MODEL_REGISTRY default variant: 'high'
+
+async function writeOpencodeDiscovery(home, { error = null, variants = ['low', 'medium'] } = {}) {
+  const { writeJsonAtomic } = await import('../src/fsutil.mjs?t=' + Date.now() + Math.random())
+  const { paths } = await import('../src/config.mjs?t=' + Date.now() + Math.random())
+  writeJsonAtomic(paths({ AGENT_HUB_HOME: home }).discoveryFile, {
+    opencode: {
+      agent: 'opencode',
+      cmd: 'opencode',
+      binPath: '/bin/opencode',
+      version: 'opencode v2.0.18',
+      error,
+      models: error ? [] : [{ id: MUSE_SPARK, cost: [{ input: 0, output: 0 }], variants: variants.map((id) => ({ id })) }],
+      checkedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2h old -- must still be used (isGoodCatalogRow, no TTL)
+    },
+  })
+}
+
+function captureSpawn() {
+  const captured = []
+  const spawn = (cmd, args, opts) => {
+    captured.push({ cmd, args, opts })
+    return fakeChild()
+  }
+  return { spawn, captured }
+}
+
+test('startJob drops an unsupported reasoning variant before spawning opencode, using the model default, and records a job warning', async () => {
+  const home = tmpHome()
+  await writeOpencodeDiscovery(home) // catalog lists MUSE_SPARK with variants low/medium -- no 'high'
+  const { startJob } = await freshModules(home)
+  const { spawn, captured } = captureSpawn()
+
+  const { job, done } = startJob({ agent: 'opencode', model: MUSE_SPARK, task: 'hi', cwd: '/tmp', mode: 'read', adapterFor, spawn })
+  await done
+
+  const call = captured.find((c) => c.cmd === 'opencode')
+  assert.ok(call)
+  assert.equal(call.args[call.args.indexOf('-m') + 1], MUSE_SPARK, 'the unsupported variant must be dropped -- bare model id, no #high')
+  assert.equal(job.variant, null)
+  assert.ok(Array.isArray(job.warnings) && job.warnings.length === 1, 'the job record must carry exactly one warning')
+  assert.match(job.warnings[0], /high/)
+  assert.match(job.warnings[0], new RegExp(MUSE_SPARK.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+})
+
+test('startJob validates an explicit model#variant id the same way -- drops it and warns when unsupported', async () => {
+  const home = tmpHome()
+  await writeOpencodeDiscovery(home) // no 'high' variant
+  const { startJob } = await freshModules(home)
+  const { spawn, captured } = captureSpawn()
+
+  const { job, done } = startJob({ agent: 'opencode', model: `${MUSE_SPARK}#high`, task: 'hi', cwd: '/tmp', mode: 'read', adapterFor, spawn })
+  await done
+
+  const call = captured.find((c) => c.cmd === 'opencode')
+  assert.equal(call.args[call.args.indexOf('-m') + 1], MUSE_SPARK, 'the explicit #high must be stripped back to the bare model id')
+  assert.equal(job.model, MUSE_SPARK, 'the job record must store the normalized (stripped) model id')
+  assert.equal(job.variant, null)
+  assert.ok(Array.isArray(job.warnings) && job.warnings.length === 1)
+})
+
+test('startJob keeps an explicit model#variant untouched when it IS in the catalog variants[]', async () => {
+  const home = tmpHome()
+  await writeOpencodeDiscovery(home, { variants: ['low', 'medium', 'high'] })
+  const { startJob } = await freshModules(home)
+  const { spawn, captured } = captureSpawn()
+
+  const { job, done } = startJob({ agent: 'opencode', model: `${MUSE_SPARK}#high`, task: 'hi', cwd: '/tmp', mode: 'read', adapterFor, spawn })
+  await done
+
+  const call = captured.find((c) => c.cmd === 'opencode')
+  assert.equal(call.args[call.args.indexOf('-m') + 1], `${MUSE_SPARK}#high`)
+  assert.ok(!job.warnings || job.warnings.length === 0)
+})
+
+test('startJob leaves the variant untouched (no warning) when the catalog does not know the model at all', async () => {
+  const home = tmpHome() // no discovery.json written
+  const { startJob } = await freshModules(home)
+  const { spawn, captured } = captureSpawn()
+
+  const { job, done } = startJob({ agent: 'opencode', model: MUSE_SPARK, task: 'hi', cwd: '/tmp', mode: 'read', adapterFor, spawn })
+  await done
+
+  const call = captured.find((c) => c.cmd === 'opencode')
+  assert.equal(call.args[call.args.indexOf('-m') + 1], `${MUSE_SPARK}#high`, 'the registry default variant must still apply with no catalog evidence')
+  assert.ok(!job.warnings || job.warnings.length === 0)
+})
+
+test('startJob leaves the variant untouched (no warning) when the discovery row is errored', async () => {
+  const home = tmpHome()
+  await writeOpencodeDiscovery(home, { error: 'model list timed out' })
+  const { startJob } = await freshModules(home)
+  const { spawn, captured } = captureSpawn()
+
+  const { job, done } = startJob({ agent: 'opencode', model: MUSE_SPARK, task: 'hi', cwd: '/tmp', mode: 'read', adapterFor, spawn })
+  await done
+
+  const call = captured.find((c) => c.cmd === 'opencode')
+  assert.equal(call.args[call.args.indexOf('-m') + 1], `${MUSE_SPARK}#high`)
+  assert.ok(!job.warnings || job.warnings.length === 0)
+})
+
 test('startJob hard-kills only after timeoutS + KILL_GRACE_S, giving agy\'s own --print-timeout room to fire and flush first', async () => {
   const home = tmpHome()
   const { startJob } = await freshModules(home)
