@@ -28,7 +28,7 @@ Out of scope (phase 2): any change to the write gate, write allowlist, write loc
 
 | ID | Specs | Route | Status | Evidence |
 |----|-------|-------|--------|----------|
-| T1 | S1, S2 | inline | pending | |
+| T1 | S1, S2 | inline | done | `ae6246b` on `feat/same-tree-fanout-01-read-isolation`; RED 11/13 -> GREEN 16/16 (`test/read-isolation.test.mjs`) + dispatch forward test; suite 1717/1717; assess medium/under_budget |
 | T2 | S3, S4 | inline | pending | |
 | T3 | S5, S6 | inline | pending | |
 | T4 | S7 | inline | pending | |
@@ -42,3 +42,4 @@ Route evidence: no Writer-trigger reason (the units share `src/index.mjs` and `s
 - L2 (2026-10-17, user, verbatim): "Vale si inicia con la fase 1"
 - L3: Exploration evidence: write gate `src/worktree.mjs:52`; hardcoded `WRITE_ALLOWLIST = []` `src/config.mjs:149`; whole-tree readguard `src/readguard.mjs`, failing at `src/jobrunner.mjs:651,726`; agy `--mode plan` writes anyway (`src/adapters/agy.mjs:38`); `job_wait` single job, 60 s (`src/tools/jobs.mjs:340`); dispatchKey dedup (`src/dispatch.mjs:141`); `parallelWith` declared but unused (`src/router.mjs:75`); skill worktree lines `skills/multi-agent-orchestrator/SKILL.md:305-319`, `skills/agy-delegate/SKILL.md:26-30`.
 - L4 (2026-10-17, user choice): chain strategy `feature-branch-chain`.
+- L5: T1 done. Design detail: adapters without a declared `readPolicy` keep the strict in-place guard, so fake/test/future adapters keep their previous behavior; a scratch run still applies a warn-level guard to the caller's tree. Added an advisory beyond the spec: copies orphaned by a crashed hub are swept after 24 h. The tool-level forwarding and view tests were written after the implementation (no RED observed for them). Advisory for T5: agy `job_reply` and `task_continue` turns get a fresh scratch copy per turn. Session continuity across copies is untested live.
