@@ -194,13 +194,16 @@ const recentDispatches = new Map()
  * reusing another run's terminal record and "succeeding" in 0s). Omitted
  * workflowId keeps the exact legacy hash (backward compatible).
  */
-export function computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId = null, label = null } = {}) {
+export function computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId = null, label = null, writeScope = null } = {}) {
   const hash = crypto.createHash('sha256')
   hash.update(`${task ?? ''}${cwd ?? ''}${taskType ?? ''}${workflowStep ?? ''}${workflowId ?? ''}`)
   // same-tree-fanout (S4): a per-call label lets N identical reviewer
   // dispatches fan out instead of collapsing into one job. Separated by a NUL
   // so it can never collide with a task/cwd suffix; omitted keeps the legacy hash.
   if (label != null && label !== '') hash.update(`\0label:${label}`)
+  // scratch-writers: writers on disjoint scopes of the same task are distinct
+  // jobs. Sorted so the scope order never matters; omitted keeps the legacy hash.
+  if (Array.isArray(writeScope) && writeScope.length > 0) hash.update(`\0writeScope:${[...writeScope].sort().join('\0')}`)
   return hash.digest('hex')
 }
 
@@ -513,7 +516,7 @@ export async function dispatch({
 
   const profileMemo = new Map()
   const resolvedWorkflowId = workflowId ?? restDeps.workflowId ?? restDeps.workflow_id ?? null
-  const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId, label })
+  const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId, label, writeScope })
   // Harness profile + effective wait contract, resolved once per dispatch.
   // An explicit waitMode always wins over every profile default.
   const harnessProfile = resolveHarness({ explicit: harness, env, clientHint })

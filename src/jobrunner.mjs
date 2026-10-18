@@ -791,6 +791,9 @@ async function finishJob({
       patchPath: path.join(path.dirname(stdoutPath(jobId, env)), 'scope.patch'),
       apply,
       env,
+      // A cancel can land after the agent exits, while this waits for the
+      // apply lock: re-checked under the lock right before `git apply`.
+      isCanceled: () => readResult(jobId, env).status === 'canceled',
     })
 
   const error = adapter.classifyError(stdout, { timedOut, code: exitCode })
@@ -898,6 +901,13 @@ async function finishJob({
     const outcome = await finalizeWriteCopy(true)
     scratchWrite = outcome.scratchWrite
     finalDiffStats = outcome.diffStats
+    // cancelJob already finalized the record as canceled: only attach what
+    // the copy produced (nothing applied, or an apply that was already
+    // running when the cancel landed), never overwrite the status.
+    if (outcome.canceled || readResult(jobId, env).status === 'canceled') {
+      updateResult(jobId, { scratchWrite, ...(finalDiffStats ? { diffStats: finalDiffStats } : {}) }, env)
+      return
+    }
     if (outcome.failure) {
       updateResult(
         jobId,
