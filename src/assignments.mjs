@@ -226,12 +226,16 @@ export function closeAssignment(id, { verdict, note = null } = {}, env = process
   }))
 }
 
-/** Record that the native session was replaced by a rehydrated one. */
+/**
+ * Record that the native session was replaced by a rehydrated one. The old
+ * session is dropped (replaced by `sessionId`, or null until the new turn
+ * reports one through completeTurn) and its context occupancy is reset, so
+ * the budget reflects the new session. The turn lock is left untouched.
+ */
 export function markRehydrated(id, { sessionId = null } = {}, env = process.env) {
   const now = new Date().toISOString()
-  return toResult(updateAssignmentAtomic(getDb(env), id, () => {
-    const patch = { rehydrated_at: now, updated_at: now }
-    if (sessionId) patch.session_id = sessionId
-    return { ok: true, patch }
-  }))
+  return toResult(updateAssignmentAtomic(getDb(env), id, () => ({
+    ok: true,
+    patch: { rehydrated_at: now, updated_at: now, session_id: sessionId || null, context_tokens: null },
+  })))
 }

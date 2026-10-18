@@ -321,5 +321,20 @@ for (const backend of backends) {
 
       assert.deepEqual(markRehydrated('asg-missing', { sessionId: 'x' }, env), { ok: false, reason: 'not_found' })
     })
+
+    test('markRehydrated resets the old session and its occupancy, keeping the turn lock', () => {
+      const env = tmpEnv()
+      const created = createAssignment(baseInput({ sessionId: 'ses-old' }), env)
+      beginTurn(created.id, 'job-1', env)
+      completeTurn(created.id, { jobId: 'job-1', sessionId: 'ses-old', contextTokens: 9000 }, env)
+      beginTurn(created.id, 'job-2', env)
+
+      const res = markRehydrated(created.id, {}, env)
+      assert.equal(res.ok, true)
+      assert.equal(res.assignment.sessionId, null, 'the unusable session is no longer the assignment session')
+      assert.equal(res.assignment.contextTokens, null, 'the budget restarts with the new session')
+      assert.equal(res.assignment.inFlightJobId, 'job-2')
+      assert.equal(res.assignment.turns, 1)
+    })
   })
 }

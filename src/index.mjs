@@ -617,21 +617,29 @@ export function buildServer() {
       description:
         'Send the next message to an assigned task: resumes the native session of the assignment\'s latest turn ' +
         '(no jobId needed) and starts a new turn. Use it for every follow-up until the human closes the task. Refused ' +
-        'with errorKind "busy" while the previous turn is still running (wait for it first), "closed" after task_close, ' +
-        '"not_found" for an unknown id and "no_session" when the last turn recorded no resumable session. Returns ' +
+        'with errorKind "busy" while the previous turn is still running (wait for it first), "closed" after task_close ' +
+        'and "not_found" for an unknown id. When the session cannot be resumed (the last turn recorded no session, or ' +
+        'the CLI cannot resume it) the turn is rehydrated instead: a fresh session with the same agent/model/cwd/mode, ' +
+        'seeded with the original brief, the tail of the last response and this message; the result then carries ' +
+        'rehydrated: true and rehydrationReason ("no_session" | "session_unusable" | "requested"). Returns ' +
         '{jobId, status} immediately; poll with job_wait or task_status. Also returns contextBudget (last observed ' +
         'session occupancy vs the model context window); its warning means the session is getting large: consider ' +
-        'task_close and a fresh assignment, or continue knowing quality may degrade. It never blocks.',
+        'rehydrate: true for a compact fresh session, task_close and a fresh assignment, or continue knowing quality ' +
+        'may degrade. It never blocks.',
       inputSchema: {
         assignmentId: assignmentIdArg,
         message: z.string().min(1).describe('The follow-up instruction for the agent.'),
         timeoutS: z.number().int().positive().optional(),
+        rehydrate: z
+          .boolean()
+          .optional()
+          .describe('Start a compact fresh session (brief + last response + message) instead of resuming the current one.'),
       },
       outputSchema: TaskTurnResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(({ assignmentId, message, timeoutS }, extra) =>
-      taskContinueTool({ assignmentId, message, timeoutS }).then((res) => {
+    guard(({ assignmentId, message, timeoutS, rehydrate }, extra) =>
+      taskContinueTool({ assignmentId, message, timeoutS, rehydrate }).then((res) => {
         recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
         return res
       })

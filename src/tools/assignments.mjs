@@ -16,15 +16,22 @@
  * window, with an advisory warning past a configurable fraction. It replaces
  * job_reply's turn-depth nudge inside an assignment and never blocks a turn.
  *
+ * When the native session cannot be resumed (no head job or no sessionId,
+ * a reply refused as session-unusable) or the caller asks for it with
+ * `rehydrate: true`, task_continue rehydrates: it starts a fresh session
+ * through the same delegate path as task_assign, seeded with the brief, the
+ * tail of the last response and the new message (buildRehydrationPrompt).
+ *
  * Every tool returns `errorKind: null` on success. Refusals return a typed
  * errorKind ('unsupported_agent' | 'not_found' | 'closed' | 'busy' |
- * 'no_session' | 'invalid' | 'spawn_failed', or the job's own errorKind)
+ * 'invalid' | 'spawn_failed', or the job's own errorKind)
  * instead of throwing; invalid schema-level input (e.g. an unknown taskType)
  * still throws, like delegate.
  */
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import { startJob as defaultStartJob } from '../jobrunner.mjs'
-import { readResult as defaultReadResult } from '../jobstore.mjs'
+import { readResult as defaultReadResult, responsePath } from '../jobstore.mjs'
 import { readDiscovery as defaultReadDiscovery } from '../discovery.mjs'
 import { assignmentDefaultContextTokens, assignmentContextWarnFraction } from '../config.mjs'
 import { TASK_TYPES } from '../schemas.mjs'
@@ -38,6 +45,7 @@ import {
   completeTurn,
   abortTurn,
   closeAssignment,
+  markRehydrated,
 } from '../assignments.mjs'
 
 // Local agents whose CLI can resume a native session (see REPLYABLE_AGENTS in
@@ -137,7 +145,8 @@ export function contextBudget(assignment, { env = process.env, readDiscoveryFn =
     budget.warning =
       `This assignment's session last held about ${contextTokens} tokens, ${Math.round(raw * 100)}% of the ` +
       `${contextWindow}-token context window (${windowNote}). The session is getting large and answer quality may ` +
-      'degrade: consider closing it with task_close and assigning a fresh task with a summary, or continue knowing ' +
+      'degrade: consider task_continue with rehydrate: true to carry on in a compact fresh session seeded with the ' +
+      'brief and the last response, closing it with task_close and assigning a fresh task, or continuing knowing ' +
       'quality may degrade.'
   }
   return budget
@@ -150,6 +159,51 @@ function readJobOrNull(jobId, readResultFn, env) {
   } catch {
     return null
   }
+}
+
+/** A job's final response text (jobstore response.txt), or null when absent. */
+function defaultReadResponse(jobId, env) {
+  return fs.readFileSync(responsePath(jobId, env), 'utf8')
+}
+
+function readResponseOrNull(jobId, readResponseFn, env) {
+  if (!jobId) return null
+  try {
+    return readResponseFn(jobId, env)
+  } catch {
+    return null
+  }
+}
+
+/** Upper bound on the previous response carried into a rehydrated session. */
+export const REHYDRATION_RESPONSE_MAX_CHARS = 8000
+
+// jobReplyTool refusals meaning the head session itself cannot be resumed.
+// Refusals about the request or the turn (invalid, not_terminal) are not.
+const SESSION_UNUSABLE_ERROR_KINDS = new Set(['no_session', 'unsupported'])
+
+/**
+ * Prompt that starts a fresh session for an assignment whose native session
+ * cannot be resumed: the original brief, the tail of the last turn's final
+ * response (bounded to `maxChars`, with an explicit marker when cut) and the
+ * new message, each in a clearly delimited section. The summary section is
+ * omitted when there is no usable previous response. Pure.
+ */
+export function buildRehydrationPrompt({ assignment, lastResponse, message, maxChars = REHYDRATION_RESPONSE_MAX_CHARS }) {
+  const sections = [
+    'This task continues in a fresh session: the previous agent session could not be resumed or was replaced to ' +
+      'keep the context compact. The original task brief and the final response of the previous session follow; ' +
+      'treat them as context, then act on the new message.',
+    `=== ORIGINAL TASK BRIEF ===\n${assignment.brief}\n=== END ORIGINAL TASK BRIEF ===`,
+  ]
+  const previous = typeof lastResponse === 'string' ? lastResponse.trim() : ''
+  if (previous) {
+    const cut = previous.length > maxChars
+    const body = cut ? `[truncated: showing the last ${maxChars} of ${previous.length} characters]\n${previous.slice(-maxChars)}` : previous
+    sections.push(`=== PREVIOUS SESSION SUMMARY (final response of the last turn) ===\n${body}\n=== END PREVIOUS SESSION SUMMARY ===`)
+  }
+  sections.push(`=== NEW MESSAGE ===\n${message}\n=== END NEW MESSAGE ===`)
+  return sections.join('\n\n')
 }
 
 function jobSummary(job) {
@@ -293,14 +347,26 @@ export async function taskAssignTool({
  * passes a jobId. The turn-depth "consider a fresh delegate" warning is not
  * surfaced here: an assignment is meant to stay in one session. Instead the
  * result carries the contextBudget of the session being resumed.
+ *
+ * Rehydration: when the head has no resumable sessionId ('no_session'),
+ * job_reply refuses the session as unusable ('session_unusable'), or the
+ * caller passes `rehydrate: true` ('requested'), the turn instead starts a
+ * fresh session through delegate with buildRehydrationPrompt, under the same
+ * turn lock. Once that job has started the assignment is marked rehydrated
+ * (old session and its occupancy dropped); the new job's sessionId becomes
+ * the assignment's on reconcile. The result then carries `rehydrated: true`
+ * and `rehydrationReason`.
  */
 export async function taskContinueTool({
   assignmentId,
   message,
   timeoutS,
+  rehydrate = false,
   startJobFn = defaultStartJob,
   readResultFn = defaultReadResult,
+  readResponseFn = defaultReadResponse,
   readDiscoveryFn = defaultReadDiscovery,
+  jobReplyFn = jobReplyTool,
   env = process.env,
   now = Date.now,
 }) {
@@ -313,8 +379,32 @@ export async function taskContinueTool({
   if (notIdle) return notIdle
 
   const head = readJobOrNull(assignment.headJobId, readResultFn, env)
-  if (!head?.sessionId) {
-    return refusal(assignmentId, 'no_session', { error: 'the assignment has no head job with a resumable sessionId' })
+  const upfrontReason = rehydrate === true ? 'requested' : head?.sessionId ? null : 'no_session'
+
+  // A fresh session with the same agent/model/cwd/mode as the assignment;
+  // variant and taskType are not stored on the assignment, so they come from
+  // the head job record when there is one.
+  const rehydrateTurn = async (fn, rehydrationReason) => {
+    const task = buildRehydrationPrompt({
+      assignment,
+      lastResponse: readResponseOrNull(head?.jobId, readResponseFn, env),
+      message,
+    })
+    const started = await delegateTool({
+      agent: assignment.agent,
+      model: assignment.model,
+      task,
+      cwd: assignment.cwd,
+      mode: assignment.mode ?? 'read',
+      timeoutS,
+      title: `${assignment.title || assignment.id} (rehydrated)`,
+      variant: head?.variant ?? undefined,
+      taskType: head?.taskType ?? undefined,
+      startJobFn: fn,
+      env,
+    })
+    if (started.status !== 'failed') markRehydrated(assignmentId, {}, env)
+    return { ...started, parentJobId: null, turnDepth: 0, rehydrationReason }
   }
 
   const outcome = await runLockedTurn({
@@ -322,24 +412,39 @@ export async function taskContinueTool({
     startJobFn,
     env,
     now,
-    start: (fn) => jobReplyTool({ jobId: head.jobId, message, timeoutS, startJobFn: fn, env }),
+    start: async (fn) => {
+      if (upfrontReason) return rehydrateTurn(fn, upfrontReason)
+      const reply = await jobReplyFn({ jobId: head.jobId, message, timeoutS, startJobFn: fn, env })
+      // Only a refusal that spawned nothing can fall back under the same lock.
+      if (reply.status === 'failed' && !reply.jobId && SESSION_UNUSABLE_ERROR_KINDS.has(reply.errorKind)) {
+        return rehydrateTurn(fn, 'session_unusable')
+      }
+      return reply
+    },
   })
 
   if (outcome.lockRefusal) {
     return refusal(assignmentId, outcome.lockRefusal.reason, { inFlightJobId: outcome.lockRefusal.inFlightJobId ?? null })
   }
   if (outcome.error) {
-    return refusal(assignmentId, 'spawn_failed', { parentJobId: head.jobId, error: String(outcome.error?.message ?? outcome.error) })
+    return refusal(assignmentId, 'spawn_failed', { parentJobId: head?.jobId ?? null, error: String(outcome.error?.message ?? outcome.error) })
   }
   const { result } = outcome
+  // A fresh session that failed to start is reported with its reason but
+  // rehydrated: false — nothing was recorded on the assignment.
+  const rehydration = result.rehydrationReason
+    ? { rehydrated: result.status !== 'failed', rehydrationReason: result.rehydrationReason }
+    : {}
+  const budgetOf = result.rehydrationReason ? getAssignment(assignmentId, env) ?? assignment : assignment
   return {
     assignmentId,
     jobId: result.jobId,
     status: result.status,
-    parentJobId: result.parentJobId ?? head.jobId,
+    parentJobId: result.rehydrationReason ? result.parentJobId : result.parentJobId ?? head.jobId,
     turnDepth: result.turnDepth,
     errorKind: result.status === 'failed' ? result.errorKind ?? 'spawn_failed' : null,
-    contextBudget: contextBudget(assignment, { env, readDiscoveryFn }),
+    contextBudget: contextBudget(budgetOf, { env, readDiscoveryFn }),
+    ...rehydration,
     ...(result.error ? { error: result.error } : {}),
   }
 }

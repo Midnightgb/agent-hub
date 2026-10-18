@@ -691,6 +691,10 @@ export const TaskTurnResponse = z
     inFlightJobId: nullableString,
     turnDepth: z.number().int().nonnegative().optional(),
     contextBudget: AssignmentContextBudget.optional(),
+    // task_continue only: set when the turn went to a fresh, rehydrated
+    // session instead of resuming the head session (false if it failed to start).
+    rehydrated: z.boolean().optional(),
+    rehydrationReason: z.enum(['no_session', 'session_unusable', 'requested']).optional(),
   })
   .passthrough()
 
