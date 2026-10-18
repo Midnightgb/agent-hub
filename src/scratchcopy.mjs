@@ -13,7 +13,7 @@ import { paths, readguardStrict } from './config.mjs'
 //   whole-tree read guard cannot tell who changed a file, so a change seen
 //   during the run (often the caller or a sibling job) is a warning.
 // - readPolicy 'scratch' (agy: `--mode plan` is known to write anyway) -> run
-//   in a hub-owned detached worktree carrying the caller's uncommitted state;
+//   in a hub-owned shared clone carrying the caller's uncommitted state;
 //   whatever the agent writes there is discarded with the copy.
 // - no readPolicy (unknown/future adapter) -> in place, strict guard: the
 //   pre-existing behavior.
@@ -49,10 +49,10 @@ export function resolveReadIsolation({ adapter, isolation = 'auto', env = proces
   return { mode: 'in-place', guard: inPlaceWarn ? 'warn' : 'strict' }
 }
 
-function gitIn(cwd, args, exec, input) {
+function gitIn(cwd, args, exec, { input, encoding = 'utf8' } = {}) {
   return exec('git', ['--no-optional-locks', ...args], {
     cwd,
-    encoding: 'utf8',
+    encoding,
     maxBuffer: 256 * 1024 * 1024,
     stdio: ['pipe', 'pipe', 'pipe'],
     ...(input != null ? { input } : {}),
@@ -60,24 +60,32 @@ function gitIn(cwd, args, exec, input) {
 }
 
 /**
- * Create a detached worktree of `cwd`'s repository under
+ * Create a scratch copy of `cwd`'s repository under
  * AGENT_HUB_HOME/scratch/<id>, then replay the caller's uncommitted state
  * into it: tracked changes (staged + unstaged, as one binary diff against
- * HEAD) and untracked, non-ignored files. The caller's tree and index are
- * only read (`--no-optional-locks`), never written.
+ * HEAD, so the copy matches the caller's working tree) and untracked,
+ * non-ignored files.
+ *
+ * The copy is a `git clone --shared` (objects borrowed read-only through
+ * alternates), NOT a linked worktree: it has its own refs, config and index,
+ * no `origin` remote, and nothing is registered in the caller's repository —
+ * so even git commands the agent runs inside the copy (commit, branch,
+ * config) never reach the caller. Hooks are disabled for the checkout. The
+ * caller's tree and index are only read (`--no-optional-locks`).
  *
  * Returns `{ ok: true, root, dir, cwd }` (cwd = the same subdirectory inside
  * the copy) or `{ ok: false, reason }`; a partial copy is always removed.
  */
 export function createScratchCopy({ cwd, id = crypto.randomUUID(), env = process.env, exec = execFileSync }) {
   let root
+  let head
   try {
     root = gitIn(cwd, ['rev-parse', '--show-toplevel'], exec).trim()
   } catch {
     return { ok: false, reason: 'not a git work tree' }
   }
   try {
-    gitIn(root, ['rev-parse', '--verify', 'HEAD'], exec)
+    head = gitIn(root, ['rev-parse', '--verify', 'HEAD'], exec).trim()
   } catch {
     return { ok: false, reason: 'repository has no commits' }
   }
@@ -91,58 +99,60 @@ export function createScratchCopy({ cwd, id = crypto.randomUUID(), env = process
   if (untracked.length > MAX_UNTRACKED_FILES) {
     return { ok: false, reason: `too many untracked files to copy (${untracked.length} > ${MAX_UNTRACKED_FILES})` }
   }
+  // ls-files reports an untracked nested repository as one `dir/` entry.
+  const nested = untracked.find((rel) => rel.endsWith('/'))
+  if (nested) return { ok: false, reason: `untracked nested repository at ${nested} cannot be copied` }
 
   const scratchRoot = path.join(paths(env).home, 'scratch')
   const dir = path.join(scratchRoot, id)
   sweepStaleScratch(scratchRoot)
   try {
     fs.mkdirSync(scratchRoot, { recursive: true })
-    gitIn(root, ['worktree', 'add', '--detach', '--quiet', dir, 'HEAD'], exec)
+    gitIn(scratchRoot, ['clone', '--shared', '--no-checkout', '--quiet', '--', root, dir], exec)
+    gitIn(dir, ['remote', 'remove', 'origin'], exec)
+    gitIn(dir, ['-c', 'core.hooksPath=/dev/null', '-c', 'advice.detachedHead=false', 'checkout', '--quiet', '--detach', head], exec)
   } catch (error) {
-    removeScratchCopy({ root, dir, exec })
-    return { ok: false, reason: `git worktree add failed: ${firstLine(error)}` }
+    removeScratchCopy({ dir })
+    return { ok: false, reason: `could not create the scratch clone: ${firstLine(error)}` }
   }
 
   try {
-    const patch = gitIn(root, ['diff', 'HEAD', '--binary', '--no-color', '--no-ext-diff', '--no-textconv'], exec)
-    if (patch.length > 0) gitIn(dir, ['apply', '--binary', '--whitespace=nowarn'], exec, patch)
+    // Buffers end to end: a text file that is not valid UTF-8 must reach the
+    // copy byte for byte.
+    const patch = gitIn(root, ['diff', 'HEAD', '--binary', '--no-color', '--no-ext-diff', '--no-textconv'], exec, { encoding: 'buffer' })
+    if (patch.length > 0) gitIn(dir, ['apply', '--binary', '--whitespace=nowarn'], exec, { input: patch })
     for (const rel of untracked) {
       const target = path.join(dir, rel)
       fs.mkdirSync(path.dirname(target), { recursive: true })
-      fs.cpSync(path.join(root, rel), target, { dereference: false, errorOnExist: false })
+      // verbatimSymlinks: keep a relative link relative, so it resolves inside
+      // the copy instead of being rewritten to point back into the caller's tree.
+      fs.cpSync(path.join(root, rel), target, { dereference: false, verbatimSymlinks: true, errorOnExist: false })
     }
   } catch (error) {
-    removeScratchCopy({ root, dir, exec })
+    removeScratchCopy({ dir })
     return { ok: false, reason: `could not replay uncommitted changes: ${firstLine(error)}` }
   }
 
   const rel = path.relative(fs.realpathSync(root), fs.realpathSync(cwd))
-  return { ok: true, root, dir, cwd: rel ? path.join(dir, rel) : dir }
+  const copyCwd = rel ? path.join(dir, rel) : dir
+  if (!fs.existsSync(copyCwd)) {
+    removeScratchCopy({ dir })
+    return { ok: false, reason: `cwd ${rel} does not exist in the scratch copy (ignored or empty untracked directory)` }
+  }
+  return { ok: true, root, dir, cwd: copyCwd }
 }
 
-/** Remove a scratch copy and its worktree registration. Never throws. */
-export function removeScratchCopy({ root, dir, exec = execFileSync }) {
-  try {
-    gitIn(root, ['worktree', 'remove', '--force', dir], exec)
-  } catch {
-    // fall through: remove the directory by hand and prune the registration
-  }
+/** Remove a scratch copy. Never throws. Nothing to unregister in the caller repo. */
+export function removeScratchCopy({ dir }) {
   try {
     fs.rmSync(dir, { recursive: true, force: true })
-  } catch {
-    // best-effort
-  }
-  try {
-    gitIn(root, ['worktree', 'prune'], exec)
   } catch {
     // best-effort
   }
 }
 
 /**
- * Best-effort removal of scratch copies left behind by a crashed hub. Their
- * worktree registrations in the source repo are dropped by that repo's next
- * `git worktree prune` (run on every removeScratchCopy, and by git gc).
+ * Best-effort removal of scratch copies left behind by a crashed hub.
  */
 function sweepStaleScratch(scratchRoot, now = Date.now()) {
   let names

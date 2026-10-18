@@ -408,22 +408,38 @@ export function startJob({
         appendWarning(job.jobId, `scratch copy unavailable (${copy.reason}); ran in place with the strict read guard`, env)
       }
     }
-    updateResult(job.jobId, { isolation: { ...readIsolation, ...(scratch ? { dir: scratch.dir } : {}) } }, env)
+    // Recorded only when the run differs from the pre-feature behavior
+    // (scratch copy, warn guard, or a fallback), so a plain strict in-place
+    // read job keeps its exact previous record and tool output.
+    if (scratch || readIsolation.guard === 'warn' || readIsolation.fallbackReason) {
+      updateResult(job.jobId, { isolation: { ...readIsolation, ...(scratch ? { dir: scratch.dir } : {}) } }, env)
+    }
+  }
+  // A scratch copy exists from here on: anything below that throws before
+  // the child is spawned must not leak it (the spawn-failure and finish
+  // paths remove it themselves).
+  const dropScratchOnThrow = (fn) => {
+    try {
+      return fn()
+    } catch (error) {
+      if (scratch) removeScratchCopyFn({ root: scratch.root, dir: scratch.dir })
+      throw error
+    }
   }
 
   const adapterArgs = { model, prompt: effectiveTask, cwd: spawnCwd, mode, title, variant: effectiveVariant, timeoutS: effectiveTimeoutS, sessionId, env }
-  const argv = adapter.buildArgv(adapterArgs)
+  const argv = dropScratchOnThrow(() => adapter.buildArgv(adapterArgs))
   // Only opencode (v2) provides stdinFor: its prompt travels on stdin
   // instead of argv (E3/E4). Every other adapter is unaffected -- the
   // optional chaining leaves stdin undefined for them, which spawnDetached
   // treats as "no stdin", byte-identical to before.
-  const stdin = adapter.stdinFor?.(adapterArgs)
+  const stdin = dropScratchOnThrow(() => adapter.stdinFor?.(adapterArgs))
 
   // Snapshot right before spawning, AFTER the write gate/lock: a gate failure
   // must never be judged by a snapshot it never ran against.
-  const snapshot = mode === 'read' || mode === 'write' ? takeSnapshotFn(cwd, { env }) : null
+  const snapshot = dropScratchOnThrow(() => (mode === 'read' || mode === 'write' ? takeSnapshotFn(cwd, { env }) : null))
   // What the agent itself wrote inside its scratch copy (reported, discarded).
-  const scratchSnapshot = scratch ? takeSnapshotFn(scratch.cwd, { env }) : null
+  const scratchSnapshot = dropScratchOnThrow(() => (scratch ? takeSnapshotFn(scratch.cwd, { env }) : null))
 
   // The local CLIs are third-party processes outside our control. Secrets
   // are always redacted; HOME isolation depends on the sandbox profile.
@@ -442,7 +458,7 @@ export function startJob({
     console.warn('Agent running in compatibility sandbox: environment secrets filtered, HOME inherited. Use isolated-home for stronger credential isolation.')
   }
 
-  const resolved = resolveAgyCommand({ profile: effectiveProfile, agyCmd: adapter.cmd, agyArgv: argv })
+  const resolved = dropScratchOnThrow(() => resolveAgyCommand({ profile: effectiveProfile, agyCmd: adapter.cmd, agyArgv: argv }))
 
   let child
   try {

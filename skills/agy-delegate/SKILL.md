@@ -25,10 +25,13 @@ canonical; this skill only points to it.
 
 **Read mode is not enforced by agy.** Verified: `agy --mode plan` writes files with or without
 `--dangerously-skip-permissions`, so a plan turn can still edit its `cwd`. agent-hub handles it
-for you: an agy read job runs in a hub-managed scratch copy of your tree (a detached worktree
+for you: an agy read job runs in a hub-managed scratch copy of your tree (a private shared clone
 under `AGENT_HUB_HOME/scratch/` with your uncommitted and untracked files, removed when the job
-ends), so pass your own checkout as `cwd` and create no worktree yourself. Anything agy wrote is
-discarded and listed in `isolation.discardedPaths`. Fan several agy reads out in parallel the
+ends), so pass your own checkout as `cwd` and create no worktree yourself. Anything agy wrote in
+the copy is discarded: changed files are listed in `isolation.discardedPaths`, and git commits,
+branches or config it made there never reach your repository.
+The one write the copy cannot stop is to an absolute path in your tree: it shows up as
+`readGuard.level:'warn'`, so avoid absolute paths of your checkout in the task text. Fan several agy reads out in parallel the
 same way (see the orchestrator skill's "Parallel reads"). `isolation:'in-place'` opts back into
 running in your tree with the strict guard (`errorKind:'read_mode_violation'` on any change).
 (opencode's plan agent did respect read mode in testing.)

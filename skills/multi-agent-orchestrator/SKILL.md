@@ -114,7 +114,8 @@ gets one more correction pass before it's considered done — never trust either
    (`opencode`'s plan agent did respect read mode in testing). That is why the hub runs agy read
    turns in its own scratch copy of your tree (uncommitted and untracked files included,
    removed after the turn): whatever agy writes there is discarded and listed in
-   `isolation.discardedPaths`, so your checkout is never touched and you need no worktree.
+   `isolation.discardedPaths`, so you need no worktree. Only a write to an absolute path in
+   your checkout escapes the copy; it shows up as `readGuard.level:'warn'`.
    A non-empty `discardedPaths` means "the plan turn tried to edit," not a bad plan.
 2. **Plan review.** `job_wait`/`job_result` the plan, and check it against the actual code (not
    just internal consistency) — the real corrections seen in practice were things like "this
@@ -327,8 +328,9 @@ Claude Code subagents:
   - agy runs in a hub-managed scratch copy of your tree (uncommitted and untracked files
     included, removed after the job).
   - copilot/codex/opencode run in place, because their CLIs enforce read-only.
-  - If you or a sibling job edit the tree meanwhile, the job still succeeds and reports
-    `readGuard.level:'warn'` with the changed paths. That is your own edit, not the reviewer's.
+  - If the tree changes during the run, the job still succeeds and reports
+    `readGuard.level:'warn'` with the changed paths. Usually that is your own edit or a sibling
+    job's, but the guard cannot tell who wrote it: check any path you did not touch.
     `AGENT_HUB_READGUARD=strict` restores failing on any change.
 - **Writes are different**: a write job still needs a secondary worktree (next section). Keep
   implementation either in your own session or in one write delegate per worktree.

@@ -18,6 +18,7 @@ export const REVIEW_OUTPUT_INSTRUCTION = [
   '}',
   '```',
   `Use "findings": [] when you found nothing. At most ${HANDOFF_LIMITS.maxItems} findings, most severe first. "line" is a number or null.`,
+  `Keep "summary" under ${HANDOFF_LIMITS.maxSummaryChars} characters and each "title"/"detail" under ${HANDOFF_LIMITS.maxItemChars}; a longer review is rejected.`,
 ].join('\n')
 
 export function assertOutput(output) {
@@ -29,23 +30,38 @@ export function appendReviewInstruction(task) {
   return `${task}\n\n${REVIEW_OUTPUT_INSTRUCTION}`
 }
 
-const FENCE_RE = /```json[^\n]*\n([\s\S]*?)```/g
+// An opener is "```json" (optionally with trailing spaces) ending its line; a
+// JSON string can never contain a raw newline, so a ```json token quoted
+// inside the block's own strings can never match.
+const OPENER_RE = /```json[ \t]*\r?\n/g
+const MAX_CANDIDATES = 50
 
 /**
- * Parse the LAST fenced ```json block of `text` as a review. Returns
- * `{ ok: true, review: { summary, findings } }` with optional finding fields
- * normalized (file/line -> null, detail -> ''), or `{ ok: false, error }`.
+ * Parse the LAST fenced ```json block of `text` as a review. Openers are tried
+ * from the last one back, and for each opener the closing fences from the
+ * last one back, so neither a finding detail with its own ``` code sample nor
+ * a fenced sample after the block can cut it short; the first slice that
+ * parses as JSON wins. Returns `{ ok: true, review: { summary, findings } }`
+ * with optional finding fields normalized (file/line -> null, detail -> ''),
+ * or `{ ok: false, error }` (the error of the last opener's best attempt).
  */
 export function parseReviewOutput(text) {
-  const blocks = [...String(text ?? '').matchAll(FENCE_RE)]
-  if (blocks.length === 0) return { ok: false, error: 'no fenced ```json review block in the response' }
-  let value
-  try {
-    value = JSON.parse(blocks[blocks.length - 1][1])
-  } catch (error) {
-    return { ok: false, error: `the last \`\`\`json block is not valid JSON: ${error.message}` }
+  const source = String(text ?? '')
+  const bodies = [...source.matchAll(OPENER_RE)].map((m) => m.index + m[0].length).slice(-MAX_CANDIDATES).reverse()
+  if (bodies.length === 0) return { ok: false, error: 'no fenced ```json review block in the response' }
+  let firstError = null
+  for (const bodyStart of bodies) {
+    const closes = []
+    for (let at = source.indexOf('```', bodyStart); at !== -1; at = source.indexOf('```', at + 3)) closes.push(at)
+    for (const close of closes.slice(-MAX_CANDIDATES).reverse()) {
+      try {
+        return validateReview(JSON.parse(source.slice(bodyStart, close)))
+      } catch (error) {
+        firstError ??= error
+      }
+    }
   }
-  return validateReview(value)
+  return { ok: false, error: `the last \`\`\`json block is not valid JSON${firstError ? `: ${firstError.message}` : ' (no closing fence)'}` }
 }
 
 function validateReview(value) {
@@ -66,7 +82,7 @@ function validateReview(value) {
     if (f.line != null && !(Number.isInteger(f.line) && f.line > 0)) return { ok: false, error: `${at}.line must be a positive integer or null` }
     if (f.detail != null && typeof f.detail !== 'string') return { ok: false, error: `${at}.detail must be a string` }
     const detail = f.detail ?? ''
-    if (f.title.length > maxItemChars || detail.length > maxItemChars) return { ok: false, error: `${at} exceeds ${maxItemChars} characters` }
+    if (f.title.length > maxItemChars || detail.length > maxItemChars || (f.file ?? '').length > maxItemChars) return { ok: false, error: `${at} exceeds ${maxItemChars} characters` }
     findings.push({ severity: f.severity, file: f.file ?? null, line: f.line ?? null, title: f.title, detail })
   }
   return { ok: true, review: { summary: value.summary, findings } }

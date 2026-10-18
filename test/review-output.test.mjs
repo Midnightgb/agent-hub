@@ -104,3 +104,28 @@ test('S5: delegate forwards output to startJob', async () => {
   tools.delegateTool({ agent: 'copilot', model: 'auto', task: 't', cwd, output: 'review', startJobFn: (args) => { forwarded = args.output; return { job: { jobId: 'j', status: 'queued' } } } })
   assert.equal(forwarded, 'review')
 })
+
+test('T5: a finding detail that contains a code fence still parses', () => {
+  const review = { summary: 's', findings: [{ severity: 'minor', title: 't', detail: 'use this:\n```js\nfoo()\n```\ninstead' }] }
+  const res = parseReviewOutput('prose\n```json\n' + JSON.stringify(review, null, 2) + '\n```\n')
+  assert.equal(res.ok, true, res.error)
+  assert.match(res.review.findings[0].detail, /```js/)
+})
+
+test('live regression: a ```json token inside a JSON string of the block does not hide the block', () => {
+  // Shape seen live from opencode deepseek-v4.1-flash-free: the summary itself
+  // mentions the literal ```json token.
+  const review = { summary: 'rejected whenever the block itself contains the literal ```json token or is followed by a fence', findings: [] }
+  const text = 'prose\n\n```json\n' + JSON.stringify(review, null, 2) + '\n```\n\nafter: ```js\nx()\n```\n'
+  const res = parseReviewOutput(text)
+  assert.equal(res.ok, true, res.error)
+  assert.match(res.review.summary, /literal ```json token/)
+})
+
+test('live finding: a ```jsonc block is not taken for the review, and an over-long file path is rejected', () => {
+  const good = { summary: 's', findings: [] }
+  const res = parseReviewOutput('```json\n' + JSON.stringify(good) + '\n```\n\n```jsonc\n{"a": 1}\n```\n')
+  assert.equal(res.ok, true, res.error)
+  const long = { summary: 's', findings: [{ severity: 'info', title: 't', file: 'x'.repeat(2001) }] }
+  assert.match(parseReviewOutput('```json\n' + JSON.stringify(long) + '\n```').error, /exceeds 2000 characters/)
+})
