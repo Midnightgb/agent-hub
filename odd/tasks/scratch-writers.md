@@ -39,8 +39,8 @@ Out of scope: changing the existing worktree gate, the write allowlist or the pe
 | ID | Specs | Route | Status | Evidence |
 |----|-------|-------|--------|----------|
 | T1 | S1-S4 | delegated writer (context backstop: long parent session) | done | `080570d` on `feat/scratch-writers-01-apply`; RED 12/15 + 2 dispatch -> GREEN `test/scratch-writers.test.mjs` 15/15; focused 65/65; suite 1761/1761; parent spot check 43/43 |
-| T2 | S5 + MCP params | inline | pending | |
-| T3 | S1-S5 | delegated verifier (high risk: write path, concurrency) | pending | |
+| T2 | S5 + MCP params | inline | done | `0682c24` on `feat/scratch-writers-02-docs` (MCP params landed in T1); passive docs + help text; suite 1761/1761 |
+| T3 | S1-S5 | delegated verifier (high risk: write path, concurrency) | running | baseline `6589bb1` |
 
 Route evidence: T1 goes to a writer under the long-session backstop. The parent context is past ~150k after phase 1. Risk items 1 (writes to the caller's tree), 2 (write guard semantics) and 4 (concurrent apply) fire the Verification trigger.
 
