@@ -23,9 +23,13 @@ const APPLY_LOCK_WAIT_MS = 30_000
 // A lock older than this is reclaimed even when its pid looks alive (pid reuse).
 const APPLY_LOCK_STALE_MS = 2 * 60 * 1000
 const APPLY_LOCK_POLL_MS = 50
+// An unparseable lock file younger than this is treated as held.
+const APPLY_LOCK_GARBLED_GRACE_MS = 10_000
 
 const HUB_IDENTITY = ['-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null']
-const PATCH_FLAGS = ['--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames']
+// Explicit a/ b/ prefixes override a user's diff.noprefix / diff.mnemonicPrefix,
+// which would otherwise make `git apply` (-p1) strip the first path segment.
+const PATCH_FLAGS = ['--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--src-prefix=a/', '--dst-prefix=b/']
 
 /**
  * Validate a writeScope synchronously, before any job record exists. Throws
@@ -148,13 +152,23 @@ function applyLockFile(root, env) {
   return path.join(paths(env).locksDir, `apply-${hash}.lock`)
 }
 
-function holderIsStale(file, now) {
+function readLock(file) {
+  try {
+    return { raw: fs.readFileSync(file, 'utf8'), mtimeMs: fs.statSync(file).mtimeMs }
+  } catch {
+    return null // vanished meanwhile
+  }
+}
+
+function lockIsStale({ raw, mtimeMs }, now) {
   let holder
   try {
-    holder = JSON.parse(fs.readFileSync(file, 'utf8'))
+    holder = JSON.parse(raw)
   } catch {
-    // Garbled or vanished: a garbled lock can never be released by its owner.
-    return true
+    // Unparseable: a holder never publishes a partial file (see the link in
+    // acquireApplyLock), but an older writer or a crash mid-write might. Only
+    // reclaim it once it has sat untouched past a short grace period.
+    return now - mtimeMs > APPLY_LOCK_GARBLED_GRACE_MS
   }
   if (!Number.isFinite(holder?.at) || now - holder.at > APPLY_LOCK_STALE_MS) return true
   try {
@@ -166,28 +180,63 @@ function holderIsStale(file, now) {
 }
 
 /**
- * Short per-repository lock serializing applies to one caller repo across
- * every hub process: atomic exclusive create under AGENT_HUB_HOME, bounded
- * wait, and reclaim of a holder whose pid is gone or that is too old.
- * Resolves `{ acquired: true, file, release }` or `{ acquired: false, reason }`.
+ * Reclaim a stale lock without racing another reclaimer: move it aside to a
+ * unique name (only one rename can win), then confirm the moved file is the
+ * one judged stale. If a new holder replaced it between the read and the
+ * rename, link that holder's file back (EEXIST if yet another holder already
+ * got in; that residual window needs two reclaims and two acquisitions inside
+ * one rename, and is accepted). Returns true when the caller should retry
+ * acquiring right away.
  */
-export async function acquireApplyLock({ root, env = process.env, waitMs = APPLY_LOCK_WAIT_MS }) {
+function reclaimIfStale(file, now) {
+  const observed = readLock(file)
+  if (!observed) return true
+  if (!lockIsStale(observed, now)) return false
+  const grave = `${file}.stale-${crypto.randomUUID()}`
+  try {
+    fs.renameSync(file, grave)
+  } catch {
+    return true // someone else moved or released it first
+  }
+  let moved = null
+  try {
+    moved = fs.readFileSync(grave, 'utf8')
+  } catch {
+    // unreadable: treat as not ours to keep
+  }
+  if (moved !== observed.raw) {
+    try {
+      fs.linkSync(grave, file)
+    } catch {
+      // a newer holder already holds the lock name
+    }
+  }
+  fs.rmSync(grave, { force: true })
+  return moved === observed.raw
+}
+
+/**
+ * Short per-repository lock serializing applies to one caller repo across
+ * every hub process, under AGENT_HUB_HOME. The payload is written to a
+ * private temp file and published with link(2), which is atomic and fails
+ * with EEXIST while the lock is held, so the lock file is never seen empty.
+ * Bounded wait; a holder whose pid is gone or that is too old is reclaimed
+ * race-safely (reclaimIfStale). Resolves `{ acquired: true, file, release }`
+ * or `{ acquired: false, reason }`.
+ */
+export async function acquireApplyLock({ root, env = process.env, waitMs = APPLY_LOCK_WAIT_MS, pollMs = APPLY_LOCK_POLL_MS }) {
   const file = applyLockFile(root, env)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const token = crypto.randomUUID()
+  const temp = `${file}.${token}.tmp`
   const deadline = Date.now() + waitMs
   while (true) {
     try {
-      const fd = fs.openSync(file, 'wx')
-      try {
-        fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), token }))
-      } finally {
-        fs.closeSync(fd)
-      }
+      fs.writeFileSync(temp, JSON.stringify({ pid: process.pid, at: Date.now(), token }))
+      fs.linkSync(temp, file)
       const release = () => {
         try {
-          const holder = JSON.parse(fs.readFileSync(file, 'utf8'))
-          if (holder.token === token) fs.rmSync(file, { force: true })
+          if (JSON.parse(fs.readFileSync(file, 'utf8')).token === token) fs.rmSync(file, { force: true })
         } catch {
           // already gone or garbled: nothing of ours to remove
         }
@@ -195,13 +244,12 @@ export async function acquireApplyLock({ root, env = process.env, waitMs = APPLY
       return { acquired: true, file, release }
     } catch (error) {
       if (error?.code !== 'EEXIST') return { acquired: false, reason: `could not create the apply lock: ${error?.message ?? error}` }
+    } finally {
+      fs.rmSync(temp, { force: true })
     }
-    if (holderIsStale(file, Date.now())) {
-      fs.rmSync(file, { force: true })
-      continue
-    }
+    if (reclaimIfStale(file, Date.now())) continue
     if (Date.now() >= deadline) return { acquired: false, reason: `apply lock for ${root} is busy (waited ${waitMs}ms)` }
-    await new Promise((resolve) => setTimeout(resolve, APPLY_LOCK_POLL_MS))
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
 }
 
@@ -222,10 +270,13 @@ export function parseConflictPaths(stderr) {
  * caller's index, refs and config are never touched). `git apply` is all or
  * nothing; `--check` runs first so a conflict can name its paths.
  */
-export async function applyScopedPatch({ root, patch, inScope, env = process.env, exec = execFileSync, waitMs }) {
+export async function applyScopedPatch({ root, patch, inScope, env = process.env, exec = execFileSync, waitMs, isCanceled = () => false }) {
   const lock = await acquireApplyLock({ root, env, ...(waitMs != null ? { waitMs } : {}) })
   if (!lock.acquired) return { ok: false, errorKind: 'locked', error: lock.reason, conflictPaths: [] }
   try {
+    // The job may have been canceled while this waited for the lock: checked
+    // under the lock, right before touching the caller's tree.
+    if (isCanceled()) return { ok: false, canceled: true, conflictPaths: [] }
     const args = ['apply', '--binary', '--whitespace=nowarn']
     try {
       git(root, [...args, '--check'], exec, { input: patch })
@@ -239,6 +290,7 @@ export async function applyScopedPatch({ root, patch, inScope, env = process.env
         conflictPaths,
       }
     }
+    if (isCanceled()) return { ok: false, canceled: true, conflictPaths: [] }
     try {
       git(root, args, exec, { input: patch })
     } catch (error) {
@@ -254,10 +306,11 @@ export async function applyScopedPatch({ root, patch, inScope, env = process.env
  * Finish a scratch writer while its copy still exists. With `apply` (the
  * agent succeeded) the in-scope patch is applied to the caller's tree;
  * otherwise nothing is applied and the patch is only saved for salvage.
- * Never throws. Returns `{ scratchWrite, diffStats, failure }` where
- * `failure` is null or `{ errorKind, error }` for the job record.
+ * Never throws. Returns `{ scratchWrite, diffStats, failure, canceled? }`
+ * where `failure` is null or `{ errorKind, error }` for the job record and
+ * `canceled` means `isCanceled()` turned true before the apply.
  */
-export async function finalizeScratchWrite({ dir, root, base, writeScope, patchPath, apply, env = process.env, exec = execFileSync, waitMs }) {
+export async function finalizeScratchWrite({ dir, root, base, writeScope, patchPath, apply, env = process.env, exec = execFileSync, waitMs, isCanceled = () => false }) {
   let changes
   try {
     changes = collectScopedChanges({ dir, base, writeScope, exec })
@@ -287,7 +340,15 @@ export async function finalizeScratchWrite({ dir, root, base, writeScope, patchP
   if (inScope.length === 0) {
     return { scratchWrite: { ...common, applied: true, appliedPaths: [] }, diffStats: null, failure: null }
   }
-  const outcome = await applyScopedPatch({ root, patch, inScope, env, exec, waitMs })
+  const outcome = await applyScopedPatch({ root, patch, inScope, env, exec, waitMs, isCanceled })
+  if (outcome.canceled) {
+    return {
+      scratchWrite: { ...common, applied: false, appliedPaths: [], unappliedPaths: inScope, reason: 'job was canceled before the apply; nothing was applied' },
+      diffStats: null,
+      failure: null,
+      canceled: true,
+    }
+  }
   if (!outcome.ok) {
     return {
       scratchWrite: { ...common, applied: false, appliedPaths: [], unappliedPaths: inScope, conflictPaths: outcome.conflictPaths },

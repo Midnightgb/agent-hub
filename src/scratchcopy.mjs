@@ -119,7 +119,9 @@ export function createScratchCopy({ cwd, id = crypto.randomUUID(), env = process
   try {
     // Buffers end to end: a text file that is not valid UTF-8 must reach the
     // copy byte for byte.
-    const patch = gitIn(root, ['diff', 'HEAD', '--binary', '--no-color', '--no-ext-diff', '--no-textconv'], exec, { encoding: 'buffer' })
+    // Explicit a/ b/ prefixes: a user's diff.noprefix / diff.mnemonicPrefix
+    // would otherwise make `git apply` (-p1) strip the first path segment.
+    const patch = gitIn(root, ['diff', 'HEAD', '--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/'], exec, { encoding: 'buffer' })
     if (patch.length > 0) gitIn(dir, ['apply', '--binary', '--whitespace=nowarn'], exec, { input: patch })
     for (const rel of untracked) {
       const target = path.join(dir, rel)

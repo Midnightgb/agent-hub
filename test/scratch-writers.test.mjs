@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFileSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import { extractLastJsonLine } from '../src/adapters/base.mjs'
 
 // scratch-writers T1 (S1-S4): a write job with a writeScope runs in a
@@ -443,4 +444,131 @@ test('S3: the per-repository apply lock is exclusive, bounded and reclaims a sta
   assert.equal(reclaimed.acquired, true)
   reclaimed.release()
   assert.equal(fs.existsSync(reclaimed.file), false)
+})
+
+// --- T3 verifier blockers (regression tests) ---
+
+test('B1: diff.noprefix=true in the user git config does not break the replay or the scoped apply', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  // Uncommitted caller change: exercises the replay diff in createScratchCopy.
+  fs.writeFileSync(path.join(repo, 'docs', 'd.txt'), 'caller dirty\n')
+  const cfg = path.join(home, 'gitconfig-noprefix')
+  fs.writeFileSync(cfg, '[diff]\n\tnoprefix = true\n')
+  const previous = process.env.GIT_CONFIG_GLOBAL
+  process.env.GIT_CONFIG_GLOBAL = cfg
+  try {
+    const { startJob, jobstore } = await freshModules(home)
+    const script = [writeFiles({ 'src/a.txt': 'a1\na2 noprefix\na3\n' }), respond('"ok"')].join('; ')
+    const { job, done } = runWriter(startJob, { script, cwd: repo, writeScope: ['**'] })
+    await done
+    const result = jobstore.readResult(job.jobId)
+    assert.equal(result.status, 'succeeded', `${result.errorKind}: ${result.error}`)
+    assert.deepEqual(result.scratchWrite.appliedPaths, ['src/a.txt'])
+    assert.equal(fs.readFileSync(path.join(repo, 'src', 'a.txt'), 'utf8'), 'a1\na2 noprefix\na3\n')
+    assert.equal(fs.readFileSync(path.join(repo, 'docs', 'd.txt'), 'utf8'), 'caller dirty\n')
+  } finally {
+    if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL
+    else process.env.GIT_CONFIG_GLOBAL = previous
+  }
+})
+
+function applyLockPath(home, repo) {
+  const hash = crypto.createHash('sha1').update(fs.realpathSync(repo)).digest('hex')
+  return path.join(home, 'runs', '.locks', `apply-${hash}.lock`)
+}
+
+async function waitFor(predicate, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('waitFor timed out')
+    await new Promise((r) => setTimeout(r, 20))
+  }
+}
+
+test('B2: a job canceled while waiting for the apply lock never applies its patch', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  const { startJob, cancelJob, jobstore } = await freshModules(home)
+  const lockFile = applyLockPath(home, repo)
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true })
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: Date.now(), token: 'other' }))
+  const exited = path.join(home, 'agent-exited')
+  const script = [writeFiles({ 'src/a.txt': 'a1\na2 canceled\na3\n' }), respond('"ok"'), `require('fs').writeFileSync(${JSON.stringify(exited)}, '1')`].join('; ')
+  const { job, done } = runWriter(startJob, { script, cwd: repo, writeScope: ['src/**'] })
+
+  await waitFor(() => fs.existsSync(exited))
+  // finishJob is now blocked on the held apply lock; the record still says running.
+  await new Promise((r) => setTimeout(r, 300))
+  assert.equal(jobstore.readResult(job.jobId).status, 'running')
+  await cancelJob(job.jobId)
+  fs.rmSync(lockFile, { force: true })
+  await done
+
+  const result = jobstore.readResult(job.jobId)
+  assert.equal(result.status, 'canceled')
+  assert.equal(fs.readFileSync(path.join(repo, 'src', 'a.txt'), 'utf8'), 'a1\na2\na3\n')
+  assert.equal(git(['status', '--porcelain'], repo), '')
+  assert.equal(result.scratchWrite.applied, false)
+  assert.deepEqual(result.scratchWrite.appliedPaths, [])
+  assert.deepEqual(result.scratchWrite.unappliedPaths, ['src/a.txt'])
+  assert.ok(fs.existsSync(result.scratchWrite.patchPath), 'the patch is saved')
+  assert.deepEqual(scratchEntries(home), [])
+})
+
+test('B3: an empty (just-created) apply lock file is held, not stale', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  const env = { ...process.env, AGENT_HUB_HOME: home }
+  const { acquireApplyLock } = await import('../src/scratchwrite.mjs?t=' + Date.now())
+  const lockFile = applyLockPath(home, repo)
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true })
+  fs.writeFileSync(lockFile, '')
+  const attempt = await acquireApplyLock({ root: repo, env, waitMs: 500 })
+  assert.equal(attempt.acquired, false, 'a fresh empty lock file must not be reclaimed')
+  assert.ok(fs.existsSync(lockFile))
+  // Once it is older than the grace period it is reclaimed.
+  const old = new Date(Date.now() - 60_000)
+  fs.utimesSync(lockFile, old, old)
+  const reclaimed = await acquireApplyLock({ root: repo, env, waitMs: 500 })
+  assert.equal(reclaimed.acquired, true)
+  reclaimed.release()
+})
+
+test('B3: the apply lock is mutually exclusive across processes', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  const marker = path.join(home, 'holder')
+  const moduleUrl = new URL('../src/scratchwrite.mjs', import.meta.url).href
+  const child = `
+    import fs from 'node:fs'
+    const { acquireApplyLock } = await import(${JSON.stringify(moduleUrl)})
+    const env = { ...process.env, AGENT_HUB_HOME: ${JSON.stringify(home)} }
+    let overlaps = 0
+    for (let i = 0; i < 30; i++) {
+      const lock = await acquireApplyLock({ root: ${JSON.stringify(repo)}, env, waitMs: 20000, pollMs: 2 })
+      if (!lock.acquired) { console.log('NOLOCK ' + lock.reason); process.exit(2) }
+      try { fs.writeFileSync(${JSON.stringify(marker)}, String(process.pid), { flag: 'wx' }) } catch { overlaps++ }
+      const until = Date.now() + 1
+      while (Date.now() < until) {}
+      fs.rmSync(${JSON.stringify(marker)}, { force: true })
+      lock.release()
+    }
+    console.log('OVERLAPS ' + overlaps)
+  `
+  const { spawn } = await import('node:child_process')
+  const runs = [1, 2, 3, 4].map(
+    () =>
+      new Promise((resolve) => {
+        const p = spawn(process.execPath, ['--input-type=module', '-e', child], { stdio: ['ignore', 'pipe', 'inherit'] })
+        let out = ''
+        p.stdout.on('data', (d) => (out += d))
+        p.on('close', (code) => resolve({ code, out: out.trim() }))
+      })
+  )
+  const results = await Promise.all(runs)
+  for (const r of results) {
+    assert.equal(r.code, 0, r.out)
+    assert.equal(r.out, 'OVERLAPS 0')
+  }
 })

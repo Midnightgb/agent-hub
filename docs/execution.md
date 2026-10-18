@@ -143,7 +143,8 @@ change it made against that base (commits included) is split by the scope:
 
 Scope entries match as `:(top,glob)<entry>` from the repository root: `*`
 stays within one directory level, `**` crosses levels, a bare directory name
-matches everything below it. Absolute paths, `..`, empty entries and entries
+matches everything below it, and `[...]` is a character class (so `src/[x].txt`
+matches `src/x.txt`). Absolute paths, `..`, empty entries and entries
 starting with `:` are rejected before any job exists, as is a `writeScope` on a
 read job or a remote agent.
 
@@ -161,6 +162,13 @@ itself failed, so the work can be applied by hand. No copy means
 in place. `job_reply` on a scoped writer inherits its `writeScope` (each turn
 gets a fresh copy that already contains the previous turns' applied changes),
 and `verify` checks run in the caller's `cwd` after the apply.
+
+The diff is taken against the copy's starting state, which includes the
+caller's uncommitted changes. An agent that rewinds history in the copy (for
+example `git reset --hard HEAD~1` or `git checkout -- <path>`) therefore
+produces a diff that **reverts** those caller changes inside the scope, and the
+apply writes that revert to the caller's tree. Tell writers not to reset or
+check out files, and review `scratchWrite.appliedPaths` with `git diff`.
 
 ## Metrics and adaptive timeouts
 
