@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and returns `{jobs, completed, pending, done, timedOut}`; `dispatch` accepts
   a per-call `label` that joins the derived `dispatchKey`, so identical
   parallel dispatches no longer collapse into one job.
+- Structured review output: `output: 'review'` on `delegate`/`dispatch` asks
+  for a final findings JSON block, and `job_result` returns it parsed as
+  `review` (or `reviewError`). `dispatch({fanout: true})` also starts the
+  read-only `parallelWith` reviewer(s) of the routed chain step and returns
+  them as `parallelJobs`. The `adversarial-review` prompt now uses this flow.
 - Diff stats for write-mode jobs: a GitHub-style `+X −Y · N files` summary and
   per-file table, live on Running Jobs and persisted (survives worktree
   deletion) on History. Measured from `git diff --numstat` against the

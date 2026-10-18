@@ -449,6 +449,67 @@ test('same-tree-fanout S4: dispatches with the same task but different labels st
   assert.equal(r1again.dispatchKey, r1.dispatchKey)
 })
 
+function fanoutStartJob(calls) {
+  return async (args) => {
+    calls.push(args)
+    return {
+      job: { jobId: `job-fan-${calls.length}`, agent: args.agent, model: args.model, status: 'queued', createdAt: new Date().toISOString(), dispatchKey: args.dispatchKey },
+      done: Promise.resolve(),
+    }
+  }
+}
+
+const fanoutBase = (calls, primary) => ({
+  cwd: '/tmp/test-fanout',
+  taskType: 'adversarial-review',
+  routeFn: async () => ({ primary, fallbacks: [] }),
+  circuitBreakerOpenFn: () => false,
+  runPreflightFn: async () => ({ status: 'ready' }),
+  startJobFn: fanoutStartJob(calls),
+})
+
+test('same-tree-fanout S6: fanout:true also starts the parallelWith reviewer and returns it as parallelJobs', async () => {
+  const calls = []
+  const primary = { agent: 'agy', model: 'claude-sonnet-4-6', mode: 'read', parallelWith: { agent: 'copilot', model: 'auto', mode: 'read' } }
+  const res = await dispatch({ ...fanoutBase(calls, primary), task: 'fanout-on', fanout: true, output: 'review', isolation: 'auto' })
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].agent, 'agy')
+  assert.equal(calls[0].output, 'review', 'output is forwarded to the primary')
+  const parallel = calls[1]
+  assert.equal(parallel.agent, 'copilot')
+  assert.equal(parallel.model, 'auto')
+  assert.equal(parallel.mode, 'read')
+  assert.equal(parallel.task, 'fanout-on')
+  assert.equal(parallel.output, 'review')
+  assert.equal(parallel.isolation, 'auto')
+  assert.notEqual(parallel.dispatchKey, calls[0].dispatchKey)
+  assert.deepEqual(res.parallelJobs, [{ jobId: 'job-fan-2', agent: 'copilot', model: 'auto', status: 'queued', errorKind: null }])
+})
+
+test('same-tree-fanout S6: without fanout the parallelWith pair is not started and the reply has no parallelJobs', async () => {
+  const calls = []
+  const primary = { agent: 'agy', model: 'claude-sonnet-4-6', mode: 'read', parallelWith: { agent: 'copilot', model: 'auto', mode: 'read' } }
+  const res = await dispatch({ ...fanoutBase(calls, primary), task: 'fanout-off' })
+  assert.equal(calls.length, 1)
+  assert.equal('parallelJobs' in res, false)
+})
+
+test('same-tree-fanout S6: a write-mode or host-only parallelWith is reported as skipped, never started', async () => {
+  const calls = []
+  const write = { agent: 'agy', model: 'm', mode: 'read', parallelWith: { agent: 'copilot', model: 'auto', mode: 'write' } }
+  const res = await dispatch({ ...fanoutBase(calls, write), task: 'fanout-write', fanout: true })
+  assert.equal(calls.length, 1)
+  assert.equal(res.parallelJobs.length, 1)
+  assert.equal(res.parallelJobs[0].jobId, null)
+  assert.match(res.parallelJobs[0].skipped, /write mode is never fanned out/)
+
+  const calls2 = []
+  const host = { agent: 'agy', model: 'm', mode: 'read', parallelWith: { agent: 'claude', model: 'sonnet', mode: 'read' } }
+  const res2 = await dispatch({ ...fanoutBase(calls2, host), task: 'fanout-host', fanout: true })
+  assert.equal(calls2.length, 1)
+  assert.match(res2.parallelJobs[0].skipped, /host-only/)
+})
+
 test('reserves write lock when mode is write and passes reservationToken to startJob', async () => {
   let acquireLockCalled = false
   let passedReservationToken = null

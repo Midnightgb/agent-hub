@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { parseReviewOutput } from '../review-output.mjs'
 import { startJob as defaultStartJob, cancelJob } from '../jobrunner.mjs'
 import { readResult, responsePath } from '../jobstore.mjs'
 import { WRITE_ALLOWLIST, TURN_DEPTH_WARNING } from '../config.mjs'
@@ -92,6 +93,8 @@ export function delegateTool({
   verify = null,
   // same-tree-fanout (S2): 'auto' | 'in-place' | 'scratch' for read jobs.
   isolation,
+  // same-tree-fanout (S5): 'review' asks for findings JSON (job_result parses it).
+  output,
   startJobFn = defaultStartJob,
   listAgysProfilesFn = listAgysProfilesSync,
   env = process.env,
@@ -131,6 +134,7 @@ export function delegateTool({
     profileStatus: effectiveProfileStatus,
     verify,
     ...(isolation ? { isolation } : {}),
+    ...(output ? { output } : {}),
   })
   return { jobId: job.jobId, status: job.status, errorKind: job.errorKind ?? null }
 }
@@ -350,6 +354,8 @@ export async function jobReplyTool({
     sessionId: parent.sessionId,
     parentJobId: jobId,
     allowlist: WRITE_ALLOWLIST,
+    // same-tree-fanout (S5): a reply to a review job is still a review turn.
+    ...(parent.output ? { output: parent.output } : {}),
   })
   return { jobId: job.jobId, status: job.status, parentJobId: jobId, errorKind: job.errorKind ?? null, turnDepth, warning }
 }
@@ -454,7 +460,19 @@ export function jobResultTool({ jobId, maxLines = 20, tailLines = 10 }) {
     errorKind: result.errorKind ?? null,
     verification: result.verification ?? null,
     ...readIsolationView(result),
+    ...reviewView(result, fullText),
   }
+}
+
+/**
+ * same-tree-fanout (S5): for an output:'review' job, the parsed findings (or
+ * why they could not be parsed). Absent for every other job.
+ */
+function reviewView(result, fullText) {
+  if (result.output !== 'review') return {}
+  if (!TERMINAL_STATUSES.has(result.status) && !fullText) return { review: null, reviewError: 'job has not produced a response yet' }
+  const parsed = parseReviewOutput(fullText)
+  return parsed.ok ? { review: parsed.review } : { review: null, reviewError: parsed.error }
 }
 
 export async function jobCancelTool({ jobId }) {

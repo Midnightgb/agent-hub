@@ -142,6 +142,11 @@ const guard = (handler, wrap = (payload) => payload) => async (args, extra) => {
 
 const agentEnum = z.enum(['agy', 'opencode', 'copilot', 'codex'])
 const modeEnum = z.enum(['read', 'write'])
+// same-tree-fanout (S5): structured review output; see src/review-output.mjs.
+const outputArg = z
+  .enum(['review'])
+  .optional()
+  .describe('review: the hub asks the agent to end with a JSON block {summary, findings[{severity, file, line, title, detail}]}; job_result returns it parsed as review (or reviewError). The job never fails on a bad block.')
 // same-tree-fanout (S2): read-job isolation; see src/scratchcopy.mjs.
 const isolationArg = z
   .enum(['auto', 'in-place', 'scratch'])
@@ -431,6 +436,7 @@ export function buildServer() {
           'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
         ),
         isolation: isolationArg,
+        output: outputArg,
       },
       outputSchema: DelegateResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
@@ -439,8 +445,8 @@ export function buildServer() {
     // for the job) -- do not reach for .then() here. guard() awaits whatever
     // the handler returns, so a plain object is correct. dispatch() below can
     // use .then() only because it really is async.
-    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation }, extra) => {
-      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation })
+    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output }, extra) => {
+      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output })
       // C1.2 origin mapping (best-effort, mapping-only): remember which
       // harness session this job came from for a future wake-up bridge.
       recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
@@ -479,13 +485,15 @@ export function buildServer() {
           'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
         ),
         isolation: isolationArg,
+        output: outputArg,
+        fanout: z.boolean().optional().describe('Also start the read-only parallelWith reviewer(s) declared on the routed chain step (e.g. adversarial-review: agy + copilot) and return them as parallelJobs; wait on all with job_wait({jobIds}). Default false.'),
         label: z.string().min(1).optional().describe('Fan-out: a distinct label per call keeps N identical dispatches (e.g. parallel reviewers) from deduplicating into one job. Ignored when dispatchKey is given.'),
       },
       outputSchema: DispatchResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label }, extra) =>
-      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, clientHint: getMcpClientHint() }).then((res) => {
+    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout }, extra) =>
+      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, clientHint: getMcpClientHint() }).then((res) => {
         // C1.2 origin mapping (best-effort, mapping-only): remember which
         // harness session this dispatch came from for a future wake-up bridge.
         recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })
@@ -1110,15 +1118,13 @@ export function buildServer() {
             type: 'text',
             text:
               `Goal: ${goal}\nWorking directory: ${cwd}\n${files ? `Relevant files: ${files}\n` : ''}\n` +
-              `Run an adversarial review through agent-hub:\n` +
-              `1) route({taskType:'adversarial-review'}) — the delegation map's primary for this taskType is agy ` +
-              `claude-sonnet-4-6 run in parallel with copilot auto (see the returned chain's parallelWith pair), ` +
-              `fallback agy claude-opus-4-6-thinking.\n` +
-              `2) delegate({agent, model, cwd:'${cwd}', mode:'read', taskType:'adversarial-review', task:'<the change ` +
-              `to review, plus what to check>'}) for BOTH the primary and its parallelWith pair — pass the same ` +
-              `taskType ('adversarial-review') to each so metrics/learnings track the pair together. Name the exact ` +
-              `output format (numbered findings, file:line evidence) and a line budget in the task text.\n` +
-              `3) job_wait/job_status + job_result for each jobId.\n` +
+              `Run an adversarial review through agent-hub, in this checkout (read jobs need no worktree):\n` +
+              `1) dispatch({taskType:'adversarial-review', cwd:'${cwd}', mode:'read', fanout:true, output:'review', ` +
+              `waitMode:'none', task:'<the change to review, plus what to check>'}) — starts the routed primary (agy ` +
+              `claude-sonnet-4-6, fallback agy claude-opus-4-6-thinking) AND its parallelWith pair (copilot auto), ` +
+              `returned as jobId + parallelJobs[].jobId.\n` +
+              `2) job_wait({jobIds:[<primary jobId>, <each parallelJobs jobId>]}) until done (re-call with pending if it times out).\n` +
+              `3) job_result for each jobId: read review.findings (severity, file, line, title, detail); on reviewError fall back to the text.\n` +
               `4) Synthesize both: flag disagreements explicitly, do not just merge lists silently.`,
           },
         },
