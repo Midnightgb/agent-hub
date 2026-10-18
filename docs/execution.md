@@ -33,7 +33,7 @@ remember: a **local deadline is never a remote failure** (a timed-out watcher
 stops polling with `pollingStoppedReason: local_deadline`; only the remote
 session's own state finalizes the job), and **local cancel always wins**
 while **remote cancel is never guaranteed**. Dispatch idempotency
-(`dispatchKey = sha256(task + cwd + taskType + workflowStep)`,
+(`dispatchKey = sha256(task + cwd + taskType + workflowStep [+ label])`,
 `executionId`/`attempt`/`parentExecutionId`/`rootExecutionId`) is separate
 from remote-creation reconciliation (fingerprint `repo/branch/task/title/window`
 plus a `listSessions` search before creating).

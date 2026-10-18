@@ -59,6 +59,8 @@ target state for later slices); file:line refs ground what already exists.
 
 - `dispatchKey = sha256(task + cwd + taskType + workflowStep)`; re-dispatch
   with the same key MUST return the existing job, never spawn a duplicate.
+  An optional per-call `label` joins the hash, so a deliberate fan-out of
+  identical tasks gets one job per label; no label keeps the legacy hash.
 - Identity chain: `executionId` (this attempt), `attempt` (n of N),
   `parentExecutionId` (retry/resume parent), `rootExecutionId` (first cause).
   `jobstore.createJob` persists all four alongside `parentJobId/sessionId`

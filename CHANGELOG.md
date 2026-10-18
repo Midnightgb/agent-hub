@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `scratch`) on `delegate`/`dispatch`. `job_status`/`job_result` expose
   `isolation`, `readGuard` and `warnings`. `AGENT_HUB_READGUARD=strict`
   restores failing every read job whose tree changed.
+- Fan-out helpers: `job_wait` accepts `jobIds` (plus `until: 'all' | 'any'`)
+  and returns `{jobs, completed, pending, done, timedOut}`; `dispatch` accepts
+  a per-call `label` that joins the derived `dispatchKey`, so identical
+  parallel dispatches no longer collapse into one job.
 - Diff stats for write-mode jobs: a GitHub-style `+X −Y · N files` summary and
   per-file table, live on Running Jobs and persisted (survives worktree
   deletion) on History. Measured from `git diff --numstat` against the
