@@ -54,6 +54,7 @@ function formatAssignment(row) {
     sessionId: row.session_id,
     turns: row.turns,
     tokensUsed: row.tokens_used,
+    contextTokens: row.context_tokens,
     inFlightJobId: row.in_flight_job_id,
     rehydratedAt: row.rehydrated_at,
     closeVerdict: row.close_verdict,
@@ -106,6 +107,7 @@ export function createAssignment({
     session_id: sessionId,
     turns: 0,
     tokens_used: 0,
+    context_tokens: null,
     in_flight_job_id: null,
     rehydrated_at: null,
     close_verdict: null,
@@ -145,8 +147,13 @@ export function beginTurn(id, jobId, env = process.env) {
  * Finish the in-flight turn: release the lock and advance the head job.
  * Only the job holding the lock may complete; anything else is refused
  * with `lock_mismatch` and nothing changes.
+ *
+ * `tokens` is added to the cumulative cost counter (tokensUsed).
+ * `contextTokens` is the occupancy of the native session as of this turn and
+ * replaces the previous value; omitted (or not a non-negative number), the
+ * last observed occupancy is kept.
  */
-export function completeTurn(id, { jobId, sessionId, tokens } = {}, env = process.env) {
+export function completeTurn(id, { jobId, sessionId, tokens, contextTokens } = {}, env = process.env) {
   requireText(jobId, 'jobId')
   const now = new Date().toISOString()
   return toResult(updateAssignmentAtomic(getDb(env), id, (row) => {
@@ -160,6 +167,10 @@ export function completeTurn(id, { jobId, sessionId, tokens } = {}, env = proces
       updated_at: now,
     }
     if (sessionId) patch.session_id = sessionId
+    const occupancy = Number(contextTokens)
+    if (contextTokens != null && Number.isFinite(occupancy) && occupancy >= 0) {
+      patch.context_tokens = Math.floor(occupancy)
+    }
     return { ok: true, patch }
   }))
 }

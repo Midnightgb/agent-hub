@@ -564,7 +564,7 @@ function jsonReleaseDispatchReservation(stateHome, dispatchKey, expectedJobId) {
 
 const ASSIGNMENT_COLUMNS = [
   'id', 'agent', 'model', 'title', 'brief', 'plan_ref', 'cwd', 'mode', 'status',
-  'head_job_id', 'session_id', 'turns', 'tokens_used', 'in_flight_job_id',
+  'head_job_id', 'session_id', 'turns', 'tokens_used', 'context_tokens', 'in_flight_job_id',
   'rehydrated_at', 'close_verdict', 'close_note', 'created_at', 'updated_at', 'closed_at',
 ]
 
@@ -574,6 +574,9 @@ function normalizeAssignmentRow(row) {
   out.status = out.status ?? 'active'
   out.turns = Number(out.turns) || 0
   out.tokens_used = Number(out.tokens_used) || 0
+  // Last observed context occupancy; null until a turn reports one. Rows
+  // written before this column existed (T1 stores) normalize to null here.
+  out.context_tokens = out.context_tokens == null ? null : Number(out.context_tokens)
   return out
 }
 
@@ -730,6 +733,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   session_id TEXT,
   turns INTEGER NOT NULL DEFAULT 0,
   tokens_used INTEGER NOT NULL DEFAULT 0,
+  context_tokens INTEGER,
   in_flight_job_id TEXT,
   rehydrated_at TEXT,
   close_verdict TEXT,
@@ -954,6 +958,7 @@ function sqliteInitDb(stateHome) {
   try { db.exec("ALTER TABLE workflow_nodes ADD COLUMN updated_at TEXT") } catch {}
   try { db.exec("ALTER TABLE workflow_nodes ADD COLUMN claimed_by TEXT") } catch {}
   try { db.exec("ALTER TABLE workflow_nodes ADD COLUMN result_json TEXT") } catch {}
+  try { db.exec("ALTER TABLE assignments ADD COLUMN context_tokens INTEGER") } catch {}
   return db
     } catch (error) {
       lastError = error

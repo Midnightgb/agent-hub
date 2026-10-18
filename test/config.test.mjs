@@ -1,6 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DEFAULT_TIMEOUTS_S, resolveTimeoutS, KILL_GRACE_S, MODEL_REGISTRY, resolveVariant, CIRCUIT_BREAKER, paths } from '../src/config.mjs'
+import {
+  DEFAULT_TIMEOUTS_S,
+  resolveTimeoutS,
+  KILL_GRACE_S,
+  MODEL_REGISTRY,
+  resolveVariant,
+  CIRCUIT_BREAKER,
+  paths,
+  ASSIGNMENT_DEFAULT_CONTEXT_TOKENS,
+  ASSIGNMENT_CONTEXT_WARN_FRACTION,
+  assignmentDefaultContextTokens,
+  assignmentContextWarnFraction,
+} from '../src/config.mjs'
 
 test('agy timeouts match observed real runs (278s/303s on medium/high were being cut by the old 90s/180s defaults)', () => {
   assert.equal(DEFAULT_TIMEOUTS_S.agy['gemini-3.8-flash-low'], 300)
@@ -56,4 +68,22 @@ test('paths() exposes accountsFile and sourcesCacheFile under the state home', (
   const p = paths({ AGENT_HUB_HOME: '/tmp/fake-home' })
   assert.equal(p.accountsFile, '/tmp/fake-home/accounts.json')
   assert.equal(p.sourcesCacheFile, '/tmp/fake-home/sources-cache.json')
+})
+
+test('assignment context budget defaults: 200k-token window, warn at 60%', () => {
+  assert.equal(ASSIGNMENT_DEFAULT_CONTEXT_TOKENS, 200000)
+  assert.equal(ASSIGNMENT_CONTEXT_WARN_FRACTION, 0.6)
+  assert.equal(assignmentDefaultContextTokens({}), 200000)
+  assert.equal(assignmentContextWarnFraction({}), 0.6)
+})
+
+test('assignment context budget is env-overridable; invalid values fall back to the defaults', () => {
+  assert.equal(assignmentDefaultContextTokens({ AGENT_HUB_ASSIGNMENT_DEFAULT_CONTEXT_TOKENS: '1000000' }), 1000000)
+  assert.equal(assignmentContextWarnFraction({ AGENT_HUB_ASSIGNMENT_CONTEXT_WARN_FRACTION: '0.8' }), 0.8)
+  for (const bad of ['', 'abc', '0', '-1']) {
+    assert.equal(assignmentDefaultContextTokens({ AGENT_HUB_ASSIGNMENT_DEFAULT_CONTEXT_TOKENS: bad }), 200000)
+  }
+  for (const bad of ['', 'abc', '0', '-0.1', '1.5']) {
+    assert.equal(assignmentContextWarnFraction({ AGENT_HUB_ASSIGNMENT_CONTEXT_WARN_FRACTION: bad }), 0.6)
+  }
 })

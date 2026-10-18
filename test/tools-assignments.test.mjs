@@ -5,10 +5,13 @@ import path from 'node:path'
 import os from 'node:os'
 import { createJob, updateResult, readResult } from '../src/jobstore.mjs'
 import { resetDbInstances } from '../src/storage/sqlite.mjs'
+import { paths } from '../src/config.mjs'
 import { getAssignment, beginTurn, rebindTurn, createAssignment } from '../src/assignments.mjs'
 import {
   ASSIGNABLE_AGENTS,
   tokenCount,
+  contextTokenCount,
+  contextBudget,
   reconcileAssignment,
   taskAssignTool,
   taskContinueTool,
@@ -72,6 +75,122 @@ describe('tokenCount', () => {
     assert.equal(tokenCount(null), 0)
     assert.equal(tokenCount(undefined), 0)
     assert.equal(tokenCount(-5), 0)
+  })
+})
+
+describe('contextTokenCount', () => {
+  test('uses codex input-side tokens, a plain total as the proxy, and null when absent', () => {
+    // codex: cachedInput is a subset of input, output is not context of the next prompt.
+    assert.equal(contextTokenCount({ input: 1000, cachedInput: 400, output: 200, reasoning: 50 }), 1000)
+    assert.equal(contextTokenCount(1500), 1500)
+    assert.equal(contextTokenCount({ total: 77 }), 77)
+    assert.equal(contextTokenCount({ output: 5 }), null)
+    assert.equal(contextTokenCount(null), null)
+    assert.equal(contextTokenCount(undefined), null)
+    assert.equal(contextTokenCount(-5), null)
+  })
+})
+
+function writeDiscovery(env, discovery) {
+  fs.writeFileSync(paths(env).discoveryFile, JSON.stringify(discovery))
+}
+
+function opencodeCatalog(model, context) {
+  return {
+    opencode: {
+      agent: 'opencode', checkedAt: '2026-10-08T00:00:00.000Z', error: null,
+      models: [{ id: model, label: model, limit: { context, output: 4096 } }],
+    },
+  }
+}
+
+describe('context budget', () => {
+  test('reconcile records the last turn occupancy: codex input side, replaced each turn', async () => {
+    const env = tmpEnv()
+    const first = await assignAndFinish(env, { agent: 'codex', model: 'default' }, { tokens: { input: 1000, cachedInput: 400, output: 200, reasoning: 50 } })
+    let a = reconcileAssignment(first.assignmentId, { env })
+    assert.equal(a.contextTokens, 1000)
+    assert.equal(a.tokensUsed, 1200)
+
+    const { startJobFn } = fakeStarter(env)
+    const next = await taskContinueTool({ assignmentId: first.assignmentId, message: 'more', startJobFn, env })
+    finishJob(next.jobId, env, { tokens: { input: 3000, cachedInput: 2500, output: 100, reasoning: 0 } })
+    a = reconcileAssignment(first.assignmentId, { env })
+    assert.equal(a.contextTokens, 3000)
+    assert.equal(a.tokensUsed, 4300)
+  })
+
+  test('a turn without token data leaves the recorded occupancy unchanged', async () => {
+    const env = tmpEnv()
+    const first = await assignAndFinish(env)
+    assert.equal(reconcileAssignment(first.assignmentId, { env }).contextTokens, 1200)
+
+    const { startJobFn } = fakeStarter(env)
+    const next = await taskContinueTool({ assignmentId: first.assignmentId, message: 'more', startJobFn, env })
+    finishJob(next.jobId, env, { status: 'failed', errorKind: 'timeout', tokens: null })
+    assert.equal(reconcileAssignment(first.assignmentId, { env }).contextTokens, 1200)
+  })
+
+  test('falls back to the default window when the catalog does not know the model', async () => {
+    const env = tmpEnv()
+    const first = await assignAndFinish(env)
+    const res = taskStatusTool({ assignmentId: first.assignmentId, env })
+    assert.deepEqual(res.contextBudget, { contextTokens: 1200, contextWindow: 200000, fraction: 0.006, source: 'default' })
+  })
+
+  test('uses the catalog context window when the live catalog lists the model', async () => {
+    const env = tmpEnv()
+    writeDiscovery(env, opencodeCatalog('opencode/big-pickle', 1_000_000))
+    const first = await assignAndFinish(env)
+    const res = taskStatusTool({ assignmentId: first.assignmentId, env })
+    assert.equal(res.contextBudget.contextWindow, 1_000_000)
+    assert.equal(res.contextBudget.source, 'catalog')
+    assert.equal(res.contextBudget.fraction, 0.0012)
+    assert.equal(res.contextBudget.warning, undefined)
+  })
+
+  test('warns at and above the fraction, not below', async () => {
+    const env = tmpEnv()
+    const first = await assignAndFinish(env)
+    const assignment = reconcileAssignment(first.assignmentId, { env })
+
+    writeDiscovery(env, opencodeCatalog('opencode/big-pickle', 2000))
+    const at = contextBudget(assignment, { env })
+    assert.equal(at.fraction, 0.6)
+    assert.match(at.warning, /task_close/)
+
+    writeDiscovery(env, opencodeCatalog('opencode/big-pickle', 1500))
+    assert.match(contextBudget(assignment, { env }).warning, /task_close/)
+
+    writeDiscovery(env, opencodeCatalog('opencode/big-pickle', 2001))
+    assert.equal(contextBudget(assignment, { env }).warning, undefined)
+  })
+
+  test('reports a null fraction before any turn recorded occupancy', () => {
+    const env = tmpEnv()
+    const a = createAssignment({ agent: 'agy', model: 'gemini-flash', brief: 'b' }, env)
+    assert.deepEqual(contextBudget(a, { env }), { contextTokens: null, contextWindow: 200000, fraction: null, source: 'default' })
+  })
+
+  test('the warn fraction is overridable through the environment', async () => {
+    const env = { ...tmpEnv(), AGENT_HUB_ASSIGNMENT_CONTEXT_WARN_FRACTION: '0.005' }
+    const first = await assignAndFinish(env)
+    const res = taskStatusTool({ assignmentId: first.assignmentId, env })
+    assert.equal(res.contextBudget.fraction, 0.006)
+    assert.match(res.contextBudget.warning, /task_close/)
+  })
+
+  test('task_continue reports the budget of the session it resumes, without the turn-depth warning', async () => {
+    const env = { ...tmpEnv(), AGENT_HUB_ASSIGNMENT_DEFAULT_CONTEXT_TOKENS: '1500' }
+    const first = await assignAndFinish(env)
+    const { startJobFn } = fakeStarter(env)
+    const res = await taskContinueTool({ assignmentId: first.assignmentId, message: 'more', startJobFn, env })
+    assert.equal(res.errorKind, null)
+    assert.equal(res.contextBudget.contextTokens, 1200)
+    assert.equal(res.contextBudget.contextWindow, 1500)
+    assert.equal(res.contextBudget.fraction, 0.8)
+    assert.match(res.contextBudget.warning, /task_close/)
+    assert.equal(res.warning, undefined)
   })
 })
 

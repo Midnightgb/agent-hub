@@ -56,6 +56,30 @@ export const METRICS_MIN_SAMPLES = 10
 /** job_reply warns (never blocks) once a conversation is this many turns deep. */
 export const TURN_DEPTH_WARNING = 5
 
+/**
+ * Task assignments replace the turn-depth nudge with a context budget: the
+ * model's context window when the live catalog reports one, otherwise this
+ * default (override: AGENT_HUB_ASSIGNMENT_DEFAULT_CONTEXT_TOKENS).
+ */
+export const ASSIGNMENT_DEFAULT_CONTEXT_TOKENS = 200_000
+
+/**
+ * task_continue/task_status warn (never block) once the session's last
+ * observed occupancy reaches this fraction of the context window
+ * (override: AGENT_HUB_ASSIGNMENT_CONTEXT_WARN_FRACTION, in (0, 1]).
+ */
+export const ASSIGNMENT_CONTEXT_WARN_FRACTION = 0.6
+
+export function assignmentDefaultContextTokens(env = process.env) {
+  const value = Number(env?.AGENT_HUB_ASSIGNMENT_DEFAULT_CONTEXT_TOKENS)
+  return Number.isInteger(value) && value > 0 ? value : ASSIGNMENT_DEFAULT_CONTEXT_TOKENS
+}
+
+export function assignmentContextWarnFraction(env = process.env) {
+  const value = Number(env?.AGENT_HUB_ASSIGNMENT_CONTEXT_WARN_FRACTION)
+  return Number.isFinite(value) && value > 0 && value <= 1 ? value : ASSIGNMENT_CONTEXT_WARN_FRACTION
+}
+
 /** Approved learnings injected into one prompt, and the max length of each (mirrored in schemas.mjs). */
 export const LEARNINGS_MAX = 3
 export const LEARNING_TEXT_MAX = 300

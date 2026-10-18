@@ -619,7 +619,9 @@ export function buildServer() {
         '(no jobId needed) and starts a new turn. Use it for every follow-up until the human closes the task. Refused ' +
         'with errorKind "busy" while the previous turn is still running (wait for it first), "closed" after task_close, ' +
         '"not_found" for an unknown id and "no_session" when the last turn recorded no resumable session. Returns ' +
-        '{jobId, status} immediately; poll with job_wait or task_status.',
+        '{jobId, status} immediately; poll with job_wait or task_status. Also returns contextBudget (last observed ' +
+        'session occupancy vs the model context window); its warning means the session is getting large: consider ' +
+        'task_close and a fresh assignment, or continue knowing quality may degrade. It never blocks.',
       inputSchema: {
         assignmentId: assignmentIdArg,
         message: z.string().min(1).describe('The follow-up instruction for the agent.'),
@@ -641,8 +643,9 @@ export function buildServer() {
     {
       title: 'Read one assigned task, or list them',
       description:
-        'With assignmentId: the assignment (status, turns, headJobId, sessionId, tokensUsed, inFlightJobId) plus ' +
-        'summaries of its latest finished turn (headJob) and running turn (inFlightJob). Without it: assignments newest ' +
+        'With assignmentId: the assignment (status, turns, headJobId, sessionId, tokensUsed, contextTokens, ' +
+        'inFlightJobId) plus summaries of its latest finished turn (headJob) and running turn (inFlightJob), and its ' +
+        'contextBudget. Without it: assignments newest ' +
         'first, filtered by status/agent/limit. A finished turn is folded into the assignment whenever this runs.',
       inputSchema: {
         assignmentId: assignmentIdArg.optional(),

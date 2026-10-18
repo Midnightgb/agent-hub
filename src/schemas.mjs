@@ -643,6 +643,7 @@ export const Assignment = z
     sessionId: nullableString,
     turns: z.number().int().nonnegative(),
     tokensUsed: z.number().int().nonnegative(),
+    contextTokens: z.number().int().nonnegative().nullable().optional(),
     inFlightJobId: nullableString,
     rehydratedAt: nullableString,
     closeVerdict: nullableString,
@@ -664,6 +665,20 @@ const AssignmentJobSummary = z
   })
   .passthrough()
 
+/**
+ * Advisory context budget of an assignment's native session: last observed
+ * occupancy against the model's context window (live catalog or default).
+ */
+const AssignmentContextBudget = z
+  .object({
+    contextTokens: z.number().int().nonnegative().nullable(),
+    contextWindow: z.number().int().positive(),
+    fraction: z.number().nonnegative().nullable(),
+    source: z.enum(['catalog', 'default']),
+    warning: z.string().optional(),
+  })
+  .passthrough()
+
 /** task_assign / task_continue: the turn that was started (or why not). */
 export const TaskTurnResponse = z
   .object({
@@ -675,6 +690,7 @@ export const TaskTurnResponse = z
     parentJobId: nullableString,
     inFlightJobId: nullableString,
     turnDepth: z.number().int().nonnegative().optional(),
+    contextBudget: AssignmentContextBudget.optional(),
   })
   .passthrough()
 
@@ -686,6 +702,7 @@ export const TaskStatusResponse = z
     assignment: Assignment.nullable().optional(),
     headJob: AssignmentJobSummary.nullable().optional(),
     inFlightJob: AssignmentJobSummary.nullable().optional(),
+    contextBudget: AssignmentContextBudget.optional(),
     assignments: z.array(Assignment).optional(),
   })
   .passthrough()

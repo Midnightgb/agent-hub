@@ -11,6 +11,11 @@
  * in-flight job's record whenever status/continue/close runs, so it survives
  * a server restart without a background watcher.
  *
+ * task_continue and task_status also report a `contextBudget` (contextBudget):
+ * the native session's last observed occupancy against the model's context
+ * window, with an advisory warning past a configurable fraction. It replaces
+ * job_reply's turn-depth nudge inside an assignment and never blocks a turn.
+ *
  * Every tool returns `errorKind: null` on success. Refusals return a typed
  * errorKind ('unsupported_agent' | 'not_found' | 'closed' | 'busy' |
  * 'no_session' | 'invalid' | 'spawn_failed', or the job's own errorKind)
@@ -20,6 +25,8 @@
 import crypto from 'node:crypto'
 import { startJob as defaultStartJob } from '../jobrunner.mjs'
 import { readResult as defaultReadResult } from '../jobstore.mjs'
+import { readDiscovery as defaultReadDiscovery } from '../discovery.mjs'
+import { assignmentDefaultContextTokens, assignmentContextWarnFraction } from '../config.mjs'
 import { TASK_TYPES } from '../schemas.mjs'
 import { delegateTool, jobReplyTool } from './jobs.mjs'
 import {
@@ -71,6 +78,71 @@ export function tokenCount(tokens) {
   return 0
 }
 
+/**
+ * Context occupancy of the native session after one turn, from a job
+ * record's `tokens` field, or null when the record has none.
+ *
+ * A resumed session reprocesses the whole transcript on every turn, so
+ * summing per-turn tokens overstates occupancy; the best proxy is the LAST
+ * turn's input side. codex reports {input, cachedInput, output, reasoning}
+ * where cachedInput is already part of input, so input alone is used.
+ * agy (usage.total_tokens) and opencode (input + output + reasoning + cache
+ * read/write of the final step) only expose one total, which is used as the
+ * occupancy proxy as is. If a CLI sums usage over several model calls inside
+ * one turn this overstates occupancy; the budget is advisory and never blocks.
+ */
+export function contextTokenCount(tokens) {
+  const valid = (n) => (Number.isFinite(n) && n >= 0 ? Math.floor(n) : null)
+  if (typeof tokens === 'number') return valid(tokens)
+  if (tokens && typeof tokens === 'object') {
+    if (tokens.input != null) return valid(Number(tokens.input))
+    if (tokens.total != null) return valid(Number(tokens.total))
+  }
+  return null
+}
+
+/** The model's context window from the live CLI catalog (discovery.json), else null. */
+function catalogContextWindow(discovery, agent, model) {
+  const models = discovery?.[agent]?.models
+  const entry = Array.isArray(models) ? models.find((m) => m?.id === model) : null
+  const window = Number(entry?.limit?.context)
+  return Number.isFinite(window) && window > 0 ? Math.floor(window) : null
+}
+
+/**
+ * Advisory context budget of an assignment's native session:
+ * {contextTokens, contextWindow, fraction, source: 'catalog'|'default', warning?}.
+ * The window comes from the live catalog when it lists the model (opencode's
+ * `limit.context`), otherwise from the configured default. `warning` is set
+ * once `fraction` reaches the configured warn fraction; nothing is blocked
+ * or closed automatically.
+ */
+export function contextBudget(assignment, { env = process.env, readDiscoveryFn = defaultReadDiscovery } = {}) {
+  let discovery = {}
+  try {
+    discovery = readDiscoveryFn(env) ?? {}
+  } catch {
+    discovery = {}
+  }
+  const catalogWindow = catalogContextWindow(discovery, assignment.agent, assignment.model)
+  const contextWindow = catalogWindow ?? assignmentDefaultContextTokens(env)
+  const source = catalogWindow ? 'catalog' : 'default'
+  const contextTokens = assignment.contextTokens ?? null
+  if (contextTokens == null) return { contextTokens: null, contextWindow, fraction: null, source }
+
+  const raw = contextTokens / contextWindow
+  const budget = { contextTokens, contextWindow, fraction: Math.round(raw * 10_000) / 10_000, source }
+  if (raw >= assignmentContextWarnFraction(env)) {
+    const windowNote = source === 'catalog' ? 'from the live model catalog' : 'a default estimate; the model window is unknown'
+    budget.warning =
+      `This assignment's session last held about ${contextTokens} tokens, ${Math.round(raw * 100)}% of the ` +
+      `${contextWindow}-token context window (${windowNote}). The session is getting large and answer quality may ` +
+      'degrade: consider closing it with task_close and assigning a fresh task with a summary, or continue knowing ' +
+      'quality may degrade.'
+  }
+  return budget
+}
+
 function readJobOrNull(jobId, readResultFn, env) {
   if (!jobId) return null
   try {
@@ -114,7 +186,12 @@ export function reconcileAssignment(id, { env = process.env, readResultFn = defa
   if (!job) {
     abortTurn(id, lock, env)
   } else if (TERMINAL_STATUSES.has(job.status)) {
-    completeTurn(id, { jobId: lock, sessionId: job.sessionId ?? null, tokens: tokenCount(job.tokens) }, env)
+    completeTurn(id, {
+      jobId: lock,
+      sessionId: job.sessionId ?? null,
+      tokens: tokenCount(job.tokens),
+      contextTokens: contextTokenCount(job.tokens),
+    }, env)
   }
   return getAssignment(id, env)
 }
@@ -214,7 +291,8 @@ export async function taskAssignTool({
  * task_continue: send the next message into the assignment's native session
  * (the head job's sessionId) through job_reply's core. The caller never
  * passes a jobId. The turn-depth "consider a fresh delegate" warning is not
- * surfaced here: an assignment is meant to stay in one session.
+ * surfaced here: an assignment is meant to stay in one session. Instead the
+ * result carries the contextBudget of the session being resumed.
  */
 export async function taskContinueTool({
   assignmentId,
@@ -222,6 +300,7 @@ export async function taskContinueTool({
   timeoutS,
   startJobFn = defaultStartJob,
   readResultFn = defaultReadResult,
+  readDiscoveryFn = defaultReadDiscovery,
   env = process.env,
   now = Date.now,
 }) {
@@ -260,14 +339,15 @@ export async function taskContinueTool({
     parentJobId: result.parentJobId ?? head.jobId,
     turnDepth: result.turnDepth,
     errorKind: result.status === 'failed' ? result.errorKind ?? 'spawn_failed' : null,
+    contextBudget: contextBudget(assignment, { env, readDiscoveryFn }),
     ...(result.error ? { error: result.error } : {}),
   }
 }
 
 /**
  * task_status: with assignmentId, the reconciled record plus head and
- * in-flight job summaries; without it, a newest-first list filtered by
- * status/agent/limit, each active entry reconciled.
+ * in-flight job summaries and its contextBudget; without it, a newest-first
+ * list filtered by status/agent/limit, each active entry reconciled.
  */
 export function taskStatusTool({
   assignmentId,
@@ -275,6 +355,7 @@ export function taskStatusTool({
   agent,
   limit,
   readResultFn = defaultReadResult,
+  readDiscoveryFn = defaultReadDiscovery,
   env = process.env,
   now = Date.now,
 } = {}) {
@@ -288,6 +369,7 @@ export function taskStatusTool({
       assignment,
       headJob: jobSummary(readJobOrNull(assignment.headJobId, readResultFn, env)),
       inFlightJob: jobSummary(readJobOrNull(inFlight, readResultFn, env)),
+      contextBudget: contextBudget(assignment, { env, readDiscoveryFn }),
     }
   }
 

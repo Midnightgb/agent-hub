@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { resetDbInstances, _setSqliteDB } from '../src/storage/sqlite.mjs'
+import { paths } from '../src/config.mjs'
 import {
   createAssignment,
   getAssignment,
@@ -38,6 +39,36 @@ function baseInput(overrides = {}) {
     headJobId: 'job-0',
     sessionId: 'ses-0',
     ...overrides,
+  }
+}
+
+// The assignments table as T1 created it, before context_tokens existed.
+const T1_ASSIGNMENTS_SQL = `
+CREATE TABLE assignments (
+  id TEXT PRIMARY KEY, agent TEXT NOT NULL, model TEXT, title TEXT, brief TEXT NOT NULL,
+  plan_ref TEXT, cwd TEXT, mode TEXT, status TEXT NOT NULL DEFAULT 'active', head_job_id TEXT,
+  session_id TEXT, turns INTEGER NOT NULL DEFAULT 0, tokens_used INTEGER NOT NULL DEFAULT 0,
+  in_flight_job_id TEXT, rehydrated_at TEXT, close_verdict TEXT, close_note TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT
+)`
+
+const T1_ROW = {
+  id: 'asg-t1', agent: 'codex', model: 'default', title: 't', brief: 'b', plan_ref: null, cwd: '/tmp',
+  mode: 'read', status: 'active', head_job_id: 'job-0', session_id: 'ses-0', turns: 1, tokens_used: 900,
+  in_flight_job_id: null, rehydrated_at: null, close_verdict: null, close_note: null,
+  created_at: '2026-10-08T00:00:00.000Z', updated_at: '2026-10-08T00:00:00.000Z', closed_at: null,
+}
+
+/** Seed a store exactly as T1 left it: no context_tokens column/field. */
+function seedT1Store(backendName, env) {
+  if (backendName === 'sqlite') {
+    const db = new SqliteDB(paths(env).dbFile)
+    db.exec(T1_ASSIGNMENTS_SQL)
+    const cols = Object.keys(T1_ROW)
+    db.prepare(`INSERT INTO assignments (${cols.join(', ')}) VALUES (${cols.map((c) => `@${c}`).join(', ')})`).run(T1_ROW)
+    db.close()
+  } else {
+    fs.writeFileSync(path.join(env.AGENT_HUB_HOME, 'storage.json'), JSON.stringify({ assignments: { [T1_ROW.id]: { ...T1_ROW, _seq: 1 } } }))
   }
 }
 
@@ -237,6 +268,46 @@ for (const backend of backends) {
       assert.equal(getAssignment(created.id, env).status, 'active')
 
       assert.deepEqual(closeAssignment('asg-missing', { verdict: 'accepted' }, env), { ok: false, reason: 'not_found' })
+    })
+
+    test('completeTurn records the last observed context occupancy, separate from the cumulative counter', () => {
+      const env = tmpEnv()
+      const created = createAssignment(baseInput(), env)
+      assert.equal(created.contextTokens, null)
+
+      assert.equal(beginTurn(created.id, 'job-1', env).ok, true)
+      const first = completeTurn(created.id, { jobId: 'job-1', tokens: 1200, contextTokens: 1000 }, env)
+      assert.equal(first.assignment.contextTokens, 1000)
+      assert.equal(first.assignment.tokensUsed, 1200)
+
+      assert.equal(beginTurn(created.id, 'job-2', env).ok, true)
+      const second = completeTurn(created.id, { jobId: 'job-2', tokens: 1500, contextTokens: 1400 }, env)
+      assert.equal(second.assignment.contextTokens, 1400, 'occupancy is replaced, not summed')
+      assert.equal(second.assignment.tokensUsed, 2700)
+
+      assert.equal(beginTurn(created.id, 'job-3', env).ok, true)
+      const third = completeTurn(created.id, { jobId: 'job-3', tokens: 10 }, env)
+      assert.equal(third.assignment.contextTokens, 1400, 'unchanged when the turn reports no occupancy')
+      assert.deepEqual(getAssignment(created.id, env), third.assignment)
+    })
+
+    test('a store created by T1 without context_tokens still reads and records occupancy', () => {
+      const env = tmpEnv()
+      seedT1Store(backend.name, env)
+
+      const legacy = getAssignment(T1_ROW.id, env)
+      assert.equal(legacy.contextTokens, null)
+      assert.equal(legacy.tokensUsed, 900)
+
+      assert.equal(beginTurn(T1_ROW.id, 'job-1', env).ok, true)
+      const done = completeTurn(T1_ROW.id, { jobId: 'job-1', tokens: 100, contextTokens: 5000 }, env)
+      assert.equal(done.ok, true)
+      assert.equal(done.assignment.contextTokens, 5000)
+      assert.equal(getAssignment(T1_ROW.id, env).contextTokens, 5000)
+
+      resetDbInstances()
+      assert.equal(getAssignment(T1_ROW.id, env).contextTokens, 5000, 'reopening a migrated store is safe')
+      assert.equal(createAssignment(baseInput(), env).contextTokens, null)
     })
 
     test('markRehydrated records the new session and timestamp', () => {
