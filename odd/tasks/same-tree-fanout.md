@@ -30,7 +30,7 @@ Out of scope (phase 2): any change to the write gate, write allowlist, write loc
 |----|-------|-------|--------|----------|
 | T1 | S1, S2 | inline | done | `ae6246b` on `feat/same-tree-fanout-01-read-isolation`; RED 11/13 -> GREEN 16/16 (`test/read-isolation.test.mjs`) + dispatch forward test; suite 1717/1717; assess medium/under_budget |
 | T2 | S3, S4 | inline | done | `50177cb` on `feat/same-tree-fanout-02-wait-label`; RED 6 -> GREEN (`test/job-wait-many.test.mjs`, dispatch label tests, MCP job_wait test in `test/server-v2.test.mjs`); suite 1725/1725; assess medium/under_budget |
-| T3 | S5, S6 | inline | pending | |
+| T3 | S5, S6 | inline | done | `579ed4e` on `feat/same-tree-fanout-03-review-fanout`; RED (review-output import + 2 fanout tests) -> GREEN (`test/review-output.test.mjs` 7/7, dispatch 26/26); suite 1735/1735; assess medium/under_budget |
 | T4 | S7 | inline | pending | |
 | T5 | S1-S7 | delegated verifier (high risk: guard + concurrency) | pending | |
 
@@ -44,3 +44,4 @@ Route evidence: no Writer-trigger reason (the units share `src/index.mjs` and `s
 - L4 (2026-10-17, user choice): chain strategy `feature-branch-chain`.
 - L5: T1 done. Design detail: adapters without a declared `readPolicy` keep the strict in-place guard, so fake/test/future adapters keep their previous behavior; a scratch run still applies a warn-level guard to the caller's tree. Added an advisory beyond the spec: copies orphaned by a crashed hub are swept after 24 h. The tool-level forwarding and view tests were written after the implementation (no RED observed for them). Advisory for T5: agy `job_reply` and `task_continue` turns get a fresh scratch copy per turn. Session continuity across copies is untested live.
 - L6: T2 done. `job_wait` output schema is now `JobWaitResponse` (`JobRecord.partial()` plus fan-out fields), so one tool answers both shapes; the single-`jobId` reply is unchanged.
+- L7: T3 done. `job_reply` inherits `output` from the parent job. Fan-out runs only read-mode, non-host pairs; others are listed with `skipped`. Limitation (documented): a deduplicated re-dispatch returns only the primary job, not its parallelJobs. The `adversarial-review` MCP prompt now uses dispatch fanout + job_wait jobIds + review output.
