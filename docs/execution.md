@@ -215,3 +215,23 @@ in-place edits to existing files inside an already-ignored directory without
 altering directory mtime or entry count are not detected because `git status`
 reports only `!! dir/`.
 
+## Structured review output and fan-out
+
+`output: 'review'` on `delegate`/`dispatch` appends an instruction to the
+prompt (every turn, including `job_reply`): end the reply with one fenced
+```` ```json ```` block `{summary, findings[{severity, file, line, title,
+detail}]}`, severity one of `blocker | major | minor | info`, at most 20
+findings (`HANDOFF_LIMITS`). `job_result` parses the last such block and
+returns `review`, or `review: null` plus `reviewError` when the block is
+missing or invalid. A bad block never fails the job.
+
+A same-tree review fan-out from Claude Code looks like:
+
+1. `dispatch({taskType: 'adversarial-review', cwd, mode: 'read', fanout: true,
+   output: 'review', waitMode: 'none', task})` starts the routed primary and its
+   `parallelWith` pair, returned as `jobId` and `parallelJobs[].jobId`. To run
+   N identical reviewers without a declared pair, call `dispatch` N times with
+   distinct `label`s, or `delegate` once per agent.
+2. `job_wait({jobIds})` (`until: 'any'` to read each as it finishes).
+3. `job_result` per job, then synthesize the findings.
+

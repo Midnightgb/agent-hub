@@ -9,6 +9,7 @@ import { resolveSandboxProfile, filterEnv, sandboxTelemetry } from './sandbox.mj
 import { resolveEffectiveTimeoutS as defaultResolveEffectiveTimeoutS } from './timeouts.mjs'
 import { selectLearnings as defaultSelectLearnings, augmentTask as defaultAugmentTask } from './learnings.mjs'
 import { takeSnapshot as defaultTakeSnapshot, diffSnapshots as defaultDiffSnapshots, formatViolation as defaultFormatViolation } from './readguard.mjs'
+import { assertOutput, appendReviewInstruction } from './review-output.mjs'
 import { assertIsolation, resolveReadIsolation, createScratchCopy as defaultCreateScratchCopy, removeScratchCopy as defaultRemoveScratchCopy } from './scratchcopy.mjs'
 import { startRemoteJob as defaultStartRemoteJob } from './cloud/runner.mjs'
 import { resolveAgyCommand, profileFromEnv, resolveAgyProfileSync as defaultResolveAgyProfileSync, recordQuotaExhaustion as defaultRecordQuotaExhaustion } from './providers/agys.mjs'
@@ -189,8 +190,12 @@ export function startJob({
   isolation = 'auto',
   createScratchCopyFn = defaultCreateScratchCopy,
   removeScratchCopyFn = defaultRemoveScratchCopy,
+  // same-tree-fanout (S5): 'review' appends the findings-JSON instruction to
+  // every turn's prompt; job_result parses it (src/review-output.mjs).
+  output = null,
 }) {
   assertIsolation(isolation)
+  assertOutput(output)
   // D2: one bad check must reject the whole call before any side effect
   // (job record, write lock, spawn) — mirrors the adapterFor(agent) throw
   // just below for an unknown agent.
@@ -245,6 +250,7 @@ export function startJob({
     effectiveTask = augmented.task
     learningIds = Array.isArray(augmented.learningIds) ? augmented.learningIds : []
   }
+  if (output === 'review') effectiveTask = appendReviewInstruction(effectiveTask)
 
   // Resolve the effective timeout BEFORE createJob so the record persists the
   // value actually used for the adapter and the kill timer, not the raw input.
@@ -326,6 +332,7 @@ export function startJob({
   if (normalizedVerify) {
     updateResult(job.jobId, { verify: normalizedVerify }, env)
   }
+  if (output) updateResult(job.jobId, { output }, env)
 
   // Token of the lease THIS job acquired (null for read mode / remote /
   // gate failures). Every later release/heartbeat for this job must use it,
