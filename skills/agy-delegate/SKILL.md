@@ -24,10 +24,14 @@ auto-loaded, `--add-dir` requirement for hosted Claude models) live in
 canonical; this skill only points to it.
 
 **Read mode is not enforced by agy.** Verified: `agy --mode plan` writes files with or without
-`--dangerously-skip-permissions`, so a plan turn can still edit its `cwd`. agent-hub enforces
-read mode after the fact — it diffs the git-visible worktree before and after the turn and fails
-the job with `errorKind:'read_mode_violation'` — so run agy read/plan turns in a disposable git
-worktree. (opencode's plan agent did respect read mode in testing.)
+`--dangerously-skip-permissions`, so a plan turn can still edit its `cwd`. agent-hub handles it
+for you: an agy read job runs in a hub-managed scratch copy of your tree (a detached worktree
+under `AGENT_HUB_HOME/scratch/` with your uncommitted and untracked files, removed when the job
+ends), so pass your own checkout as `cwd` and create no worktree yourself. Anything agy wrote is
+discarded and listed in `isolation.discardedPaths`. Fan several agy reads out in parallel the
+same way (see the orchestrator skill's "Parallel reads"). `isolation:'in-place'` opts back into
+running in your tree with the strict guard (`errorKind:'read_mode_violation'` on any change).
+(opencode's plan agent did respect read mode in testing.)
 
 **Never ask agy to run tests/builds/dev servers itself.** Its CLI auto-detaches a slow
 `run_command` into a background task and its own idle-exit kills it while still reporting
