@@ -86,15 +86,34 @@ export function opencodeOccupancyFromExport(exportJson) {
   return null
 }
 
+/**
+ * Cumulative session total from the document-level `info.tokens`: input +
+ * output + reasoning + cache.read + cache.write (same definition as the
+ * per-step total; missing parts count as 0). Null when absent or unusable.
+ */
+function cumulativeFromExport(exportJson) {
+  const tokens = exportJson?.info?.tokens
+  if (!tokens || typeof tokens !== 'object') return null
+  const parts = [tokens.input, tokens.output, tokens.reasoning, tokens.cache?.read, tokens.cache?.write]
+  if (!parts.some((n) => Number.isFinite(n))) return null
+  return parts.reduce((sum, n) => sum + count(n), 0)
+}
+
+/** Both numbers a `session export` yields: `{ occupancy, cumulative }`, each possibly null; never throws. */
+export function opencodeSessionUsageFromExport(exportJson) {
+  return { occupancy: opencodeOccupancyFromExport(exportJson), cumulative: cumulativeFromExport(exportJson) }
+}
+
 // Long sessions export large JSON; cap the stdout buffer well above that.
 const EXPORT_MAX_BUFFER = 64 * 1024 * 1024
 
 /**
- * Fail-soft, synchronous read of a session's context occupancy through
- * `opencode session export`. Synchronous like the reconcile path that calls
- * it; the timeout bounds it. Returns null on any error, timeout or invalid JSON.
+ * Fail-soft, synchronous read of a session's usage through one
+ * `opencode session export`: `{ occupancy, cumulative }`. Synchronous like the
+ * reconcile path that calls it; the timeout bounds it. Returns null on any
+ * error, timeout or invalid JSON.
  */
-export function readSessionOccupancy(sessionId, { execFn = execFileSync, timeoutMs, env = process.env } = {}) {
+export function readSessionUsage(sessionId, { execFn = execFileSync, timeoutMs, env = process.env } = {}) {
   if (!sessionId) return null
   try {
     const stdout = execFn(cmd, sessionExportArgv(sessionId), {
@@ -104,10 +123,15 @@ export function readSessionOccupancy(sessionId, { execFn = execFileSync, timeout
       env,
       stdio: ['ignore', 'pipe', 'ignore'],
     })
-    return opencodeOccupancyFromExport(JSON.parse(stdout))
+    return opencodeSessionUsageFromExport(JSON.parse(stdout))
   } catch {
     return null
   }
+}
+
+/** Context occupancy only; see `readSessionUsage`. Null on any failure. */
+export function readSessionOccupancy(sessionId, opts) {
+  return readSessionUsage(sessionId, opts)?.occupancy ?? null
 }
 
 export function parseResult(stdout) {

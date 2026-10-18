@@ -57,7 +57,7 @@ Out of scope: copilot resume, a claude CLI adapter, long-lived CLI processes, ro
 
 - Forecast: ~1,100 authored changed lines (T1 ~250, T2 ~400, T3 ~150, T4 ~200, T5 ~100) — over the ~400 budget.
 - Strategy: `ask-on-risk` (default); chain strategy `feature-branch-chain` (user choice 2026-10-08): slice PRs merge into `feat/task-assignments`, one final PR to `main`.
-- Running count: ~654 (T1) + ~520 (T2) + ~375 (T3) + ~405 (T4) + ~79 (T5) + ~190 (T6).
+- Running count: ~654 (T1) + ~520 (T2) + ~375 (T3) + ~405 (T4) + ~79 (T5) + ~190 (T6) + ~155 (T7).
 - Slices (2026-10-08), each PR holds one work-unit commit; prerequisite #111 (`feat/opencode-live-catalog` → `main`, single-pr/size:exception) lands first:
   - #112 `feat/task-assignments-01-store` → `feat/task-assignments` — `2a5fdf5` (T1, ~730, size:exception: dual backend)
   - #113 `feat/task-assignments-02-tools` → `-01-store` — `5adc91c` (T2, ~927, size:exception: one tool unit)
@@ -65,6 +65,7 @@ Out of scope: copilot resume, a claude CLI adapter, long-lived CLI processes, ro
   - #115 `feat/task-assignments-04-rehydration` → `-03-budget` — `2f83884` (T4, ~414)
   - #116 `feat/task-assignments-05-docs` → `-04-rehydration` — `cec5876` + this delivery record (T5)
   - #117 `feat/task-assignments-06-opencode-budget` → `-05-docs` — `4cb64fe` (T6, ~195)
+  - #118 `feat/task-assignments-07-opencode-cost` → `-06-opencode-budget` — `6c22600` (T7, ~160). T5+T6+T7 slice assessed medium (423 lines), review consent declined by user.
   - Tracker `feat/task-assignments` was reset to `509d65f` (base); its draft PR to `main` opens after #112 merges into it (an empty tracker PR cannot be opened).
 
 ## Tasks
@@ -76,6 +77,8 @@ Out of scope: copilot resume, a claude CLI adapter, long-lived CLI processes, ro
 - [x] **T5 — Capability fix + docs.** `claude.sessionResume` → `false` in `src/capabilities.mjs` (hub has no claude CLI adapter; host may continue its own subagents). Behavior change: `requirements: ['sessionResume']` now skips claude candidates (recorded in CHANGELOG). Docs: 4 rows in `docs/reference/tools.md`, "Task assignments" section in `docs/execution.md`, README mention, CHANGELOG `[Unreleased]` (3 Added, 1 Fixed); every documented name verified against source. Route: delegated (writer). RED: `capabilities.test.mjs` 8/9. GREEN: 9/9; capabilities + routing tests 29/29 (parent-observed); `npm test` 1679/1679 (writer). Follow-up: `claude.messagingTurnBoundary: true` has the same inconsistency (`job_reply` never replies to claude, `src/tools/jobs.mjs:127`).
 
 - [x] **T6 — opencode context occupancy from session export.** Live test (2026-10-08) showed opencode resumed turns emit no `step_finish`, so `contextTokens` stayed at the turn-1 value (29,818 vs real 36,133 at turn 3). Fix: when an opencode turn reports no tokens but has a `sessionId`, `reconcileAssignment` reads occupancy from `opencode session export <sessionId>` (last message with usage: `input + cache.read + cache.write`) via `readSessionOccupancy` (synchronous `execFileSync` with `AGENT_HUB_ASSIGNMENT_EXPORT_TIMEOUT_MS`, default 10000; fail-soft to unchanged). Injectable `readSessionOccupancyFn`. Route: delegated (writer). RED: opencode and config test files failed to load (missing exports). GREEN: focused 146/146 (parent-observed); `npm test` 1691/1691 (writer); real probe on the test session returned 36133. Deviations accepted: synchronous (reconcile is sync and shared); existing tests that finish an opencode job with null tokens and a sessionId now invoke the real binary with a fake id (fails soft, ~1 s suite); failed/canceled opencode turns with a sessionId also export. ~190 authored lines. Follow-up: per-model windows for agy (200000 default today).
+
+- [x] **T7 — opencode cumulative cost on resumed turns.** One `opencode session export` now yields `{occupancy, cumulative}` (`opencodeSessionUsageFromExport`, `readSessionUsage`); for opencode turns without usable job tokens, `reconcileAssignment` sets `contextTokens` from occupancy and credits `max(0, cumulative - tokensUsed)` so `tokensUsed` converges to the session total (null cumulative → no credit; reader failure → unchanged). `readSessionOccupancy` kept as a wrapper; `readSessionUsageFn` injectable, `readSessionOccupancyFn` still honored. Route: delegated (writer). RED: opencode test file failed to load (missing export) + 4 reconcile failures. GREEN: focused 155/155 (parent-observed); `npm test` 1700/1700 (writer); real probe returned `{occupancy: 36133, cumulative: 138058}`. ~155 authored lines.
 
 ## Progress
 

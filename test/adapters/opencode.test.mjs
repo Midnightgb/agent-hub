@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sessionIdFrom, buildArgv, stdinFor, parseResult, classifyError, listModels, interruptArgv, sessionExportArgv, opencodeOccupancyFromExport, readSessionOccupancy } from '../../src/adapters/opencode.mjs'
+import { sessionIdFrom, buildArgv, stdinFor, parseResult, classifyError, listModels, interruptArgv, sessionExportArgv, opencodeOccupancyFromExport, readSessionOccupancy, opencodeSessionUsageFromExport, readSessionUsage } from '../../src/adapters/opencode.mjs'
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'opencode')
 const read = (name) => fs.readFileSync(path.join(FIXTURES, name), 'utf8')
@@ -368,4 +368,42 @@ test('readSessionOccupancy is fail-soft: exec error, invalid JSON, missing sessi
   assert.equal(readSessionOccupancy('ses_x', { execFn: () => { throw new Error('ETIMEDOUT') } }), null)
   assert.equal(readSessionOccupancy('ses_x', { execFn: () => 'not json' }), null)
   assert.equal(readSessionOccupancy('', { execFn: () => '{}' }), null)
+})
+
+test('opencodeSessionUsageFromExport returns occupancy and the cumulative info.tokens total', () => {
+  const exp = {
+    info: { tokens: { input: 69925, output: 434, reasoning: 1184, cache: { read: 66515, write: 0 } } },
+    messages: [
+      { info: { role: 'assistant', tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 20, write: 0 } } } },
+      { info: { role: 'assistant', tokens: { input: 1076, output: 29, reasoning: 120, cache: { read: 35057, write: 0 } } } },
+    ],
+  }
+  assert.deepEqual(opencodeSessionUsageFromExport(exp), { occupancy: 36133, cumulative: 138058 })
+  assert.equal(opencodeSessionUsageFromExport(exp).occupancy, opencodeOccupancyFromExport(exp))
+})
+
+test('opencodeSessionUsageFromExport treats missing cumulative parts as 0 and absent info.tokens as null', () => {
+  assert.equal(opencodeSessionUsageFromExport({ info: { tokens: { input: 7, cache: { write: 3 } } } }).cumulative, 10)
+  assert.deepEqual(opencodeSessionUsageFromExport({ messages: [{ info: { tokens: { input: 7 } } }] }), { occupancy: 7, cumulative: null })
+  assert.equal(opencodeSessionUsageFromExport({ info: { tokens: {} } }).cumulative, null)
+  assert.equal(opencodeSessionUsageFromExport({ info: { tokens: { input: 'a' } } }).cumulative, null)
+})
+
+test('opencodeSessionUsageFromExport tolerates garbage', () => {
+  for (const bad of [null, undefined, 'x', 3, {}, { info: 'x' }]) {
+    assert.deepEqual(opencodeSessionUsageFromExport(bad), { occupancy: null, cumulative: null })
+  }
+})
+
+test('readSessionUsage runs one export and returns both numbers; fail-soft gives null', () => {
+  let calls = 0
+  const execFn = () => {
+    calls++
+    return JSON.stringify({ info: { tokens: { input: 4, output: 1, cache: { read: 2, write: 3 } } }, messages: [{ info: { tokens: { input: 1, cache: { read: 2, write: 3 } } } }] })
+  }
+  assert.deepEqual(readSessionUsage('ses_x', { execFn, timeoutMs: 50 }), { occupancy: 6, cumulative: 10 })
+  assert.equal(calls, 1)
+  assert.equal(readSessionUsage('ses_x', { execFn: () => { throw new Error('x') } }), null)
+  assert.equal(readSessionUsage('ses_x', { execFn: () => 'not json' }), null)
+  assert.equal(readSessionUsage('', { execFn }), null)
 })

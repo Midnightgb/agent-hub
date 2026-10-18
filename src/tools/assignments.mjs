@@ -34,7 +34,7 @@ import { startJob as defaultStartJob } from '../jobrunner.mjs'
 import { readResult as defaultReadResult, responsePath } from '../jobstore.mjs'
 import { readDiscovery as defaultReadDiscovery } from '../discovery.mjs'
 import { assignmentDefaultContextTokens, assignmentContextWarnFraction } from '../config.mjs'
-import { readSessionOccupancy } from '../adapters/opencode.mjs'
+import { readSessionUsage } from '../adapters/opencode.mjs'
 import { TASK_TYPES } from '../schemas.mjs'
 import { delegateTool, jobReplyTool } from './jobs.mjs'
 import {
@@ -229,11 +229,16 @@ function jobSummary(job) {
  */
 export function reconcileAssignment(
   id,
-  { env = process.env, readResultFn = defaultReadResult, now = Date.now, readSessionOccupancyFn = readSessionOccupancy } = {},
+  { env = process.env, readResultFn = defaultReadResult, now = Date.now, readSessionUsageFn, readSessionOccupancyFn } = {},
 ) {
   const assignment = getAssignment(id, env)
   if (!assignment || assignment.status !== 'active' || !assignment.inFlightJobId) return assignment
 
+  // `readSessionOccupancyFn` (occupancy only) stays supported for older callers.
+  const readUsage = readSessionUsageFn
+    ?? (readSessionOccupancyFn
+      ? (sessionId, opts) => ({ occupancy: readSessionOccupancyFn(sessionId, opts), cumulative: null })
+      : readSessionUsage)
   const lock = assignment.inFlightJobId
   if (lock.startsWith(RESERVATION_PREFIX)) {
     if (reservationAgeMs(lock, now()) > STALE_RESERVATION_MS) abortTurn(id, lock, env)
@@ -245,11 +250,15 @@ export function reconcileAssignment(
     abortTurn(id, lock, env)
   } else if (TERMINAL_STATUSES.has(job.status)) {
     let contextTokens = contextTokenCount(job.tokens)
+    let tokens = tokenCount(job.tokens)
     // A resumed opencode turn can finish without a step_finish event, hence
-    // without tokens; the session export still knows the real occupancy.
+    // without tokens; one session export still knows the real occupancy and
+    // the cumulative total, whose positive delta over tokensUsed is credited.
     if (contextTokens == null && assignment.agent === 'opencode' && job.sessionId) {
       try {
-        contextTokens = readSessionOccupancyFn(job.sessionId, { env }) ?? null
+        const usage = readUsage(job.sessionId, { env })
+        contextTokens = usage?.occupancy ?? null
+        if (Number.isFinite(usage?.cumulative)) tokens = Math.max(0, usage.cumulative - (assignment.tokensUsed ?? 0))
       } catch {
         contextTokens = null
       }
@@ -257,7 +266,7 @@ export function reconcileAssignment(
     completeTurn(id, {
       jobId: lock,
       sessionId: job.sessionId ?? null,
-      tokens: tokenCount(job.tokens),
+      tokens,
       contextTokens,
     }, env)
   }

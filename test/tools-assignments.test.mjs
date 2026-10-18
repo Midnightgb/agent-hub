@@ -159,6 +159,70 @@ describe('context budget', () => {
       assert.equal(a.contextTokens, null)
     })
 
+    describe('cumulative cost from the same export', () => {
+      const resume = async (env, id, patch, readSessionUsageFn) => {
+        const { startJobFn } = fakeStarter(env)
+        const next = await taskContinueTool({ assignmentId: id, message: 'more', startJobFn, env })
+        finishJob(next.jobId, env, { tokens: null, sessionId: 'ses-9', ...patch })
+        return reconcileAssignment(id, { env, readSessionUsageFn })
+      }
+
+      test('credits the positive delta over tokensUsed and sets occupancy', async () => {
+        const env = tmpEnv()
+        const first = await assignAndFinish(env, {}, { tokens: 1000, sessionId: 'ses-9' })
+        assert.equal(reconcileAssignment(first.assignmentId, { env }).tokensUsed, 1000)
+        const calls = []
+        const a = await resume(env, first.assignmentId, {}, (id) => { calls.push(id); return { occupancy: 36133, cumulative: 5000 } })
+        assert.deepEqual(calls, ['ses-9'])
+        assert.equal(a.contextTokens, 36133)
+        assert.equal(a.tokensUsed, 5000)
+      })
+
+      test('consecutive turns converge to the final cumulative without double counting', async () => {
+        const env = tmpEnv()
+        const first = await assignAndFinish(env, {}, { tokens: 1000, sessionId: 'ses-9' })
+        reconcileAssignment(first.assignmentId, { env })
+        let a = await resume(env, first.assignmentId, {}, () => ({ occupancy: 10, cumulative: 3000 }))
+        assert.equal(a.tokensUsed, 3000)
+        a = await resume(env, first.assignmentId, {}, () => ({ occupancy: 20, cumulative: 7000 }))
+        assert.equal(a.tokensUsed, 7000)
+      })
+
+      test('a cumulative below tokensUsed never decreases it; a null cumulative credits nothing', async () => {
+        const env = tmpEnv()
+        const first = await assignAndFinish(env, {}, { tokens: 1000, sessionId: 'ses-9' })
+        reconcileAssignment(first.assignmentId, { env })
+        let a = await resume(env, first.assignmentId, {}, () => ({ occupancy: 10, cumulative: 400 }))
+        assert.equal(a.tokensUsed, 1000)
+        assert.equal(a.contextTokens, 10)
+        a = await resume(env, first.assignmentId, {}, () => ({ occupancy: 11, cumulative: null }))
+        assert.equal(a.tokensUsed, 1000)
+        assert.equal(a.contextTokens, 11)
+      })
+
+      test('a failing or throwing reader leaves tokensUsed and contextTokens unchanged', async () => {
+        const env = tmpEnv()
+        const first = await assignAndFinish(env, {}, { tokens: 1000, sessionId: 'ses-9' })
+        reconcileAssignment(first.assignmentId, { env })
+        let a = await resume(env, first.assignmentId, {}, () => null)
+        assert.deepEqual([a.tokensUsed, a.contextTokens], [1000, 1000])
+        a = await resume(env, first.assignmentId, {}, () => { throw new Error('boom') })
+        assert.deepEqual([a.tokensUsed, a.contextTokens], [1000, 1000])
+      })
+
+      test('turns that reported tokens, and agy/codex turns, never read usage', async () => {
+        const boom = () => { throw new Error('must not be called') }
+        const env = tmpEnv()
+        const first = await assignAndFinish(env, {}, { tokens: 1200 })
+        assert.equal(reconcileAssignment(first.assignmentId, { env, readSessionUsageFn: boom }).tokensUsed, 1200)
+        for (const agent of ['agy', 'codex']) {
+          const e = tmpEnv()
+          const f = await assignAndFinish(e, { agent, model: 'default' }, { tokens: null })
+          assert.equal(reconcileAssignment(f.assignmentId, { env: e, readSessionUsageFn: boom }).tokensUsed, 0)
+        }
+      })
+    })
+
     test('agy and codex turns without tokens never call the export', async () => {
       for (const agent of ['agy', 'codex']) {
         const env = tmpEnv()
