@@ -426,6 +426,10 @@ The hub learns from its own runs, but every mutation is human-gated:
   `learning_propose({text, agent?, model?, taskType?, sourceJobId?})`. It is stored `pending`; a
   human approves it at `#/approvals?tab=learnings`, after which it is prepended (max 3, 300
   chars each, sanitized) to matching root turns.
+- **Probe it for evidence.** `learning_probe({learningId})` runs the same read task with and
+  without the pending learning (2 parallel jobs; task/cwd default to its `sourceJobId`), and
+  `learning_probe_result({probeId})` stores the comparison and a `verdictHint` on the learning
+  for the approver. It costs 2 jobs per learning and never approves anything.
 - **Review routing evidence.** `#/approvals?tab=proposals` lists chain-reorder proposals the hub
   computed from job metrics — an alternative whose 95% Wilson lower bound beats the current
   primary's upper bound, once both have 10+ samples. Accepting one is the only way it applies;

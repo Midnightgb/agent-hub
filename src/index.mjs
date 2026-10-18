@@ -18,7 +18,7 @@ import { agentsQuotaTool } from './tools/agents.mjs'
 import { resumeRemoteJobs } from './cloud/runner.mjs'
 import { metricsTool, executionGraphTool } from './tools/insights.mjs'
 import { planTaskTool, executePlanTool } from './tools/planner.mjs'
-import { learningProposeTool } from './tools/learnings.mjs'
+import { learningProposeTool, learningProbeTool, learningProbeResultTool } from './tools/learnings.mjs'
 import { agentSendMessageTool, agentInboxTool, agentAckTool, agentPeersTool } from './tools/messaging.mjs'
 import { scheduleStartupDiscovery, scheduleQuotaWarmup } from './startup.mjs'
 import { dispatch } from './dispatch.mjs'
@@ -65,6 +65,10 @@ const log = (...args) => console.error('[agent-hub]', ...args)
 const AgentsStatusResponse = z.object({ agents: z.array(AgentStatusRow) }).passthrough()
 const AgentsQuotaResponseWrapper = z.object({ agents: z.array(AgentQuotaRow) }).passthrough()
 const LearningProposeResponse = z.object({ learning: Learning, note: z.string() }).passthrough()
+const LearningProbeResponse = z.object({ probeId: z.string(), controlJobId: z.string(), treatmentJobId: z.string() }).passthrough()
+const LearningProbeResultResponse = z
+  .object({ probeId: z.string(), learningId: z.string(), done: z.boolean(), comparison: z.object({ verdictHint: z.string() }).passthrough().optional() })
+  .passthrough()
 
 const AgentSendMessageResponse = z.object({
   ok: z.boolean(),
@@ -1039,6 +1043,50 @@ export function buildServer() {
       annotations: { readOnlyHint: false, idempotentHint: true },
     },
     guard(({ text, agent, model, taskType, sourceJobId }) => learningProposeTool({ text, agent, model, taskType, sourceJobId }))
+  )
+
+  register(
+    'learning_probe',
+    {
+      title: 'Probe a pending learning',
+      description:
+        'Contrastive probe of a PENDING learning: starts the same read task twice in parallel, a control job (approved ' +
+        'learnings only) and a treatment job (plus this learning), with the same agent/model/cwd. Defaults: agent/model/' +
+        'taskType from the learning, task/cwd from its sourceJobId; anything still missing is an error before any job ' +
+        'starts. Read mode only; never changes the learning status. Returns {probeId, controlJobId, treatmentJobId} ' +
+        'immediately; read the comparison with learning_probe_result.',
+      inputSchema: {
+        learningId: z.string().min(1).describe('A pending learning id (learning_propose, or the dashboard approvals tab).'),
+        task: z.string().min(1).optional().describe("The read task both arms run. Defaults to the source job's task."),
+        cwd: z.string().min(1).optional().describe("Defaults to the source job's cwd."),
+        agent: agentEnum.optional().describe("Defaults to the learning's agent scope."),
+        model: z.string().min(1).optional().describe("Defaults to the learning's model scope."),
+        taskType: taskTypeArg,
+        output: outputArg,
+      },
+      outputSchema: LearningProbeResponse,
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    guard(({ learningId, task, cwd, agent, model, taskType, output }) => learningProbeTool({ learningId, task, cwd, agent, model, taskType, output }))
+  )
+
+  register(
+    'learning_probe_result',
+    {
+      title: 'Read a learning probe result',
+      description:
+        'Non-blocking. While either probe job runs it returns {done:false, control:{status}, treatment:{status}}. Once ' +
+        'both are terminal it returns {done:true, comparison:{control, treatment, verdictHint, reason}} (per arm: status, ' +
+        'errorKind, durationMs, responseChars, findings by severity for output:"review") and stores it on the learning ' +
+        'once. verdictHint (treatment_better|control_better|no_difference|inconclusive) is a deterministic hint, not an ' +
+        'approval: a human still approves in the dashboard.',
+      inputSchema: {
+        probeId: z.string().min(1).describe('A probeId returned by learning_probe.'),
+      },
+      outputSchema: LearningProbeResultResponse,
+      annotations: { readOnlyHint: false, idempotentHint: true },
+    },
+    guard(({ probeId }) => learningProbeResultTool({ probeId }))
   )
 
   server.registerResource(

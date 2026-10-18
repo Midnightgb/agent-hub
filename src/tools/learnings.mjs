@@ -1,4 +1,5 @@
 import { proposeLearning } from '../learnings.mjs'
+import { startLearningProbe, learningProbeResult } from '../learning-probes.mjs'
 
 /**
  * MCP tool handler for learning_propose. Always stores as pending — a human
@@ -14,4 +15,19 @@ export function learningProposeTool(input, { env = process.env } = {}) {
     learning,
     note: 'Stored as pending. A human must approve it in the dashboard (#/approvals?tab=learnings) before it is used.',
   }
+}
+
+/**
+ * MCP tool handler for learning_probe: runs the same read task as a control
+ * job (approved learnings only) and a treatment job (plus this pending
+ * learning), in parallel. Never changes the learning's status.
+ * Returns `{ probeId, controlJobId, treatmentJobId }`.
+ */
+export function learningProbeTool(input, { env = process.env, startJobFn } = {}) {
+  return startLearningProbe(input, { env, ...(startJobFn ? { startJobFn } : {}) })
+}
+
+/** MCP tool handler for learning_probe_result: non-blocking; `done:false` until both jobs are terminal. */
+export function learningProbeResultTool(input, { env = process.env } = {}) {
+  return learningProbeResult(input, { env })
 }

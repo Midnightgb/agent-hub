@@ -32,7 +32,7 @@ Out of scope: auto-approval; write-mode probes; LLM judging of the two responses
 
 | ID | Specs | Route | Status | Evidence |
 |----|-------|-------|--------|----------|
-| T1 | S1-S4 | delegated writer (context backstop: long parent session) | pending | |
+| T1 | S1-S4 | delegated writer (context backstop: long parent session) | partial | RED 15/16 -> GREEN 16/16 `test/learning-probes.test.mjs`; suite 1790/1792, the 2 failures are `test/server.test.mjs` exact tool list (outside writer surface). Dashboard UI panel skipped (lives in `dashboard/src/`, outside surface). |
 | T2 | S1-S3 | parent live probe through installed MCP | pending | |
 
 Risk tier: medium. The change adds a tool and an optional persisted field, and the human approval guard must stay untouched (a test pins it).
@@ -41,3 +41,4 @@ Risk tier: medium. The change adds a tool and an optional persisted field, and t
 
 - L1 (2026-10-18, user, verbatim): "si vale la idea 1 prototipala".
 - L2: Design inputs. Learnings are stored by `src/learnings.mjs` (`proposeLearning`, `decideLearning`, `selectLearnings`, `augmentTask`) and injected in `src/jobrunner.mjs` ~256-266, on root turns only. Approval goes through `src/dashboard.mjs` ~775-797. `learning_propose` lives in `src/tools/learnings.mjs` and `src/index.mjs` ~1025.
+- L3 (2026-10-18, T1 writer): `startJob` gained an internal `extraLearnings` option (root turn of a local agent only) that appends the probed learning after the normal selection; normal jobs are byte-identical (pinned). `src/learning-probes.mjs` holds `startLearningProbe`, `learningProbeResult` and the documented `probeVerdictHint` rules; probes persist on the learning as `probes[]`. Source-job task defaults come from its `prompt.txt` with the hub's `<hub-learnings>` prefix and review instruction stripped. `learning.probed` is emitted but not added to `EVENT_KINDS`/`VALID_KINDS` (`src/eventlog.mjs` is outside the surface; the parity test needs both). Open: add `learning_probe`, `learning_probe_result` to `test/server.test.mjs`; add the approvals UI summary in `dashboard/src/views/approvals/learnings-panel.tsx`.
