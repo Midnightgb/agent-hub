@@ -271,6 +271,24 @@ export const JobRecord = z
     // no longer offers it (src/catalog.mjs validateVariant). Absent/empty
     // when nothing was worth flagging.
     warnings: z.array(z.string()).optional(),
+    // scratch-writers (S1-S4): a scoped writer's globs, and what its scratch
+    // copy produced: paths applied to the caller's working tree, paths
+    // discarded as out of scope, the saved in-scope patch, and on a failure
+    // the paths left unapplied (conflictPaths on apply_conflict).
+    writeScope: z.array(z.string()).optional(),
+    scratchWrite: z
+      .object({
+        base: z.string(),
+        applied: z.boolean(),
+        appliedPaths: z.array(z.string()),
+        discardedPaths: z.array(z.string()),
+        patchPath: z.string().nullable(),
+        unappliedPaths: z.array(z.string()).optional(),
+        conflictPaths: z.array(z.string()).optional(),
+        reason: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough()
 

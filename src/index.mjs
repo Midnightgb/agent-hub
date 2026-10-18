@@ -154,6 +154,16 @@ const isolationArg = z
   .describe(
     'Read jobs only. auto (default): agy runs in a hub-managed scratch copy of your tree (writes discarded, removed after the job); copilot/codex/opencode run in place with a warn-level read guard. in-place: run in your tree (strict guard for agy). scratch: always use a scratch copy.'
   )
+// scratch-writers (S1-S4): scoped parallel writers; see src/scratchwrite.mjs.
+const writeScopeArg = z
+  .array(z.string().min(1))
+  .min(1)
+  .optional()
+  .describe(
+    'Write jobs only: repo-relative globs the writer owns (git glob pathspecs from the repo root: `*` stays in one segment, `**` crosses segments, a directory matches everything below it; no absolute paths or ".."). ' +
+      'With a writeScope the job runs in a hub-managed scratch copy of your repo — no worktree, gate or per-cwd lock, even in your primary checkout — and when it succeeds the hub applies to your working tree (never index/refs) only its changes inside the scope; the rest is discarded (scratchWrite.discardedPaths). ' +
+      'Your own parallel edits to other files are kept. If the patch does not apply cleanly the job fails with errorKind apply_conflict, nothing is applied and the patch stays at scratchWrite.patchPath. Give parallel writers disjoint scopes.'
+  )
 const waitModeEnum = z.enum(['none', 'attention', 'terminal'])
 const harnessEnum = z.enum(['generic', 'claude-code', 'opencode'])
 const jobIdArg = z.string().min(1).describe('A jobId returned by delegate().')
@@ -437,6 +447,7 @@ export function buildServer() {
         ),
         isolation: isolationArg,
         output: outputArg,
+        writeScope: writeScopeArg,
       },
       outputSchema: DelegateResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
@@ -445,8 +456,8 @@ export function buildServer() {
     // for the job) -- do not reach for .then() here. guard() awaits whatever
     // the handler returns, so a plain object is correct. dispatch() below can
     // use .then() only because it really is async.
-    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output }, extra) => {
-      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output })
+    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output, writeScope }, extra) => {
+      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output, writeScope })
       // C1.2 origin mapping (best-effort, mapping-only): remember which
       // harness session this job came from for a future wake-up bridge.
       recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
@@ -486,14 +497,15 @@ export function buildServer() {
         ),
         isolation: isolationArg,
         output: outputArg,
+        writeScope: writeScopeArg,
         fanout: z.boolean().optional().describe('Also start the read-only parallelWith reviewer(s) declared on the routed chain step (e.g. adversarial-review: agy + copilot) and return them as parallelJobs; wait on all with job_wait({jobIds}). Default false.'),
         label: z.string().min(1).optional().describe('Fan-out: a distinct label per call keeps N identical dispatches (e.g. parallel reviewers) from deduplicating into one job. Ignored when dispatchKey is given.'),
       },
       outputSchema: DispatchResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout }, extra) =>
-      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, clientHint: getMcpClientHint() }).then((res) => {
+    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope }, extra) =>
+      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, clientHint: getMcpClientHint() }).then((res) => {
         // C1.2 origin mapping (best-effort, mapping-only): remember which
         // harness session this dispatch came from for a future wake-up bridge.
         recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })
