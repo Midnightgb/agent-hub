@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import { spawnDetached, runWithTimeout as defaultRunWithTimeout, killProcessGroup, runCommand as defaultRunCommand } from './process.mjs'
+import path from 'node:path'
 import { createJob, updateResult, appendStdout, stdoutPath, responsePath, readResult } from './jobstore.mjs'
 import { appendEvent } from './eventlog.mjs'
 import { adapterFor as defaultAdapterFor } from './adapters/index.mjs'
@@ -11,6 +12,7 @@ import { selectLearnings as defaultSelectLearnings, augmentTask as defaultAugmen
 import { takeSnapshot as defaultTakeSnapshot, diffSnapshots as defaultDiffSnapshots, formatViolation as defaultFormatViolation } from './readguard.mjs'
 import { assertOutput, appendReviewInstruction } from './review-output.mjs'
 import { assertIsolation, resolveReadIsolation, createScratchCopy as defaultCreateScratchCopy, removeScratchCopy as defaultRemoveScratchCopy } from './scratchcopy.mjs'
+import { assertWriteScope, recordScratchBase as defaultRecordScratchBase, finalizeScratchWrite as defaultFinalizeScratchWrite } from './scratchwrite.mjs'
 import { startRemoteJob as defaultStartRemoteJob } from './cloud/runner.mjs'
 import { resolveAgyCommand, profileFromEnv, resolveAgyProfileSync as defaultResolveAgyProfileSync, recordQuotaExhaustion as defaultRecordQuotaExhaustion } from './providers/agys.mjs'
 import { modelGroupFor } from './providers/profiles.mjs'
@@ -193,9 +195,18 @@ export function startJob({
   // same-tree-fanout (S5): 'review' appends the findings-JSON instruction to
   // every turn's prompt; job_result parses it (src/review-output.mjs).
   output = null,
+  // scratch-writers (S1-S4): repo-relative globs. With mode 'write' the job
+  // runs in a scratch copy and only the in-scope part of its diff is applied
+  // to the caller's working tree (src/scratchwrite.mjs). Validated below,
+  // before any job record exists.
+  writeScope = null,
+  recordScratchBaseFn = defaultRecordScratchBase,
+  finalizeScratchWriteFn = defaultFinalizeScratchWrite,
 }) {
   assertIsolation(isolation)
   assertOutput(output)
+  assertWriteScope(writeScope, mode)
+  const scratchWriter = mode === 'write' && writeScope != null
   // D2: one bad check must reject the whole call before any side effect
   // (job record, write lock, spawn) — mirrors the adapterFor(agent) throw
   // just below for an unknown agent.
@@ -209,6 +220,9 @@ export function startJob({
   // record exists (previously adapterFor ran after createJob/the write gate;
   // no existing test pinned that ordering).
   const adapter = adapterFor(agent)
+  if (adapter.remote && scratchWriter) {
+    throw new Error(`writeScope is not supported for remote agent "${agent}": it never runs in a local checkout`)
+  }
   if (adapter.remote) {
     return startRemoteJobFn({
       agent,
@@ -333,13 +347,36 @@ export function startJob({
     updateResult(job.jobId, { verify: normalizedVerify }, env)
   }
   if (output) updateResult(job.jobId, { output }, env)
+  // Persisted so job_reply can inherit it (src/tools/jobs.mjs).
+  if (scratchWriter) updateResult(job.jobId, { writeScope: [...writeScope] }, env)
 
   // Token of the lease THIS job acquired (null for read mode / remote /
   // gate failures). Every later release/heartbeat for this job must use it,
   // so a stale holder can never delete a new holder's lease after a reclaim.
   let leaseToken = null
 
-  if (mode === 'write') {
+  // scratch-writers (S1): a scoped writer never writes in place, so it needs
+  // neither the worktree gate nor the per-cwd lock. It runs in a scratch
+  // copy whose starting state is committed as `base`; no copy -> the job
+  // fails, it never falls back to writing in the caller's tree.
+  let writeCopy = null
+  if (scratchWriter) {
+    const fail = (reason) => {
+      updateResult(job.jobId, { status: 'failed', errorKind: 'scratch_unavailable', error: reason }, env)
+      appendEvent({ kind: 'job.failed', agent, model, cwd, title, jobId: job.jobId, errorKind: 'scratch_unavailable', taskType, summary: reason, harness: harness ?? null, waitMode: waitMode ?? null, profile: effectiveProfile, profileStatus: effectiveProfileStatus }, { env })
+      return { job: readResult(job.jobId, env), done: Promise.resolve() }
+    }
+    const copy = createScratchCopyFn({ cwd, id: job.jobId, env })
+    if (!copy.ok) return fail(copy.reason)
+    const recorded = recordScratchBaseFn({ dir: copy.dir })
+    if (!recorded.ok) {
+      removeScratchCopyFn({ root: copy.root, dir: copy.dir })
+      return fail(recorded.reason)
+    }
+    writeCopy = { ...copy, base: recorded.base, writeScope: [...writeScope] }
+  }
+
+  if (mode === 'write' && !scratchWriter) {
     const gate = checkWriteAllowed({ cwd, allowlist })
     if (!gate.allowed) {
       updateResult(job.jobId, { status: 'failed', errorKind: 'worktree_denied', error: gate.reason }, env)
@@ -373,7 +410,8 @@ export function startJob({
   // case (read mode, non-git cwd, no commits yet) silently stays null, per
   // this feature's "no baseline -> no stats, no error" contract.
   let diffBase = null
-  if (mode === 'write') {
+  // A scratch writer's stats come from its applied patch, not from the caller's tree.
+  if (mode === 'write' && !scratchWriter) {
     diffBase = captureDiffBaseFn({ cwd, env })
     if (diffBase) updateResult(job.jobId, { diffBase }, env)
   }
@@ -394,8 +432,8 @@ export function startJob({
   // spawnCwd is where the CLI runs; `cwd` stays the caller's tree for the
   // record, the read guard, verification and the dashboard.
   let readIsolation = null
-  let scratch = null
-  let spawnCwd = cwd
+  let scratch = writeCopy
+  let spawnCwd = writeCopy ? writeCopy.cwd : cwd
   if (mode === 'read' && cwd) {
     readIsolation = resolveReadIsolation({ adapter, isolation, env })
     if (readIsolation.mode === 'scratch') {
@@ -437,9 +475,11 @@ export function startJob({
 
   // Snapshot right before spawning, AFTER the write gate/lock: a gate failure
   // must never be judged by a snapshot it never ran against.
-  const snapshot = dropScratchOnThrow(() => (mode === 'read' || mode === 'write' ? takeSnapshotFn(cwd, { env }) : null))
-  // What the agent itself wrote inside its scratch copy (reported, discarded).
-  const scratchSnapshot = dropScratchOnThrow(() => (scratch ? takeSnapshotFn(scratch.cwd, { env }) : null))
+  // A scratch writer is judged by its diff in the copy, not by the caller's
+  // tree (which the caller may legitimately edit meanwhile, S3).
+  const snapshot = dropScratchOnThrow(() => (mode === 'read' || (mode === 'write' && !scratchWriter) ? takeSnapshotFn(cwd, { env }) : null))
+  // What a read job wrote inside its scratch copy (reported, discarded).
+  const scratchSnapshot = dropScratchOnThrow(() => (scratch && mode === 'read' ? takeSnapshotFn(scratch.cwd, { env }) : null))
 
   // The local CLIs are third-party processes outside our control. Secrets
   // are always redacted; HOME isolation depends on the sandbox profile.
@@ -466,7 +506,7 @@ export function startJob({
   } catch (error) {
     updateResult(job.jobId, { status: 'failed', errorKind: 'crash', error: String(error?.message ?? error) }, env)
     appendEvent({ kind: 'job.failed', agent, model, cwd, title, jobId: job.jobId, errorKind: 'crash', taskType, summary: String(error?.message ?? error), harness: harness ?? null, waitMode: waitMode ?? null, profile: effectiveProfile, profileStatus: effectiveProfileStatus }, { env })
-    if (mode === 'write') releaseWriteLock({ cwd, token: leaseToken, jobId: job.jobId, env })
+    if (mode === 'write' && !scratchWriter) releaseWriteLock({ cwd, token: leaseToken, jobId: job.jobId, env })
     if (scratch) removeScratchCopyFn({ root: scratch.root, dir: scratch.dir })
     return { job: readResult(job.jobId, env), done: Promise.resolve() }
   }
@@ -478,7 +518,7 @@ export function startJob({
   // cancel kills the same process group a timeout does, and must interrupt
   // the server-side session just as the timeout path does.
   active.set(job.jobId, { pgid: child.pid, leaseToken, adapter, runCommandFn, profile: effectiveProfile })
-  if (mode === 'write') startHeartbeat({ jobId: job.jobId, cwd, token: leaseToken, ttlMs: leaseTtlMs, env })
+  if (mode === 'write' && !scratchWriter) startHeartbeat({ jobId: job.jobId, cwd, token: leaseToken, ttlMs: leaseTtlMs, env })
 
   // Hard-kill at timeoutS + KILL_GRACE_S, not at timeoutS itself: agy is
   // given --print-timeout <timeoutS>s (see buildArgv above) and exits on its
@@ -493,7 +533,7 @@ export function startJob({
 
   const done = exitPromise
     .then(({ code, timedOut }) =>
-      finishJob({ jobId: job.jobId, agent, model, cwd, title, adapter, mode, env, timedOut, exitCode: code, taskType, snapshot, readGuardLevel: readIsolation?.guard ?? 'strict', scratch, scratchSnapshot, takeSnapshotFn, diffSnapshotsFn, formatViolationFn, harness, waitMode, runCommandFn, profile: effectiveProfile, profileStatus: effectiveProfileStatus, recordQuotaExhaustionFn, diffBase, verify: normalizedVerify, runJobVerificationFn })
+      finishJob({ jobId: job.jobId, agent, model, cwd, title, adapter, mode, env, timedOut, exitCode: code, taskType, snapshot, readGuardLevel: readIsolation?.guard ?? 'strict', scratch, scratchSnapshot, takeSnapshotFn, diffSnapshotsFn, formatViolationFn, harness, waitMode, runCommandFn, profile: effectiveProfile, profileStatus: effectiveProfileStatus, recordQuotaExhaustionFn, diffBase, verify: normalizedVerify, runJobVerificationFn, writeCopy, finalizeScratchWriteFn })
     )
     .finally(() => {
       stopHeartbeat(job.jobId)
@@ -501,7 +541,7 @@ export function startJob({
       // Token-guarded: if this job's lease already expired and was reclaimed
       // by another holder, the stale token no longer matches and this
       // correctly no-ops instead of deleting the new holder's lease.
-      if (mode === 'write') releaseWriteLock({ cwd, token: leaseToken, jobId: job.jobId, env })
+      if (mode === 'write' && !scratchWriter) releaseWriteLock({ cwd, token: leaseToken, jobId: job.jobId, env })
       if (scratch) removeScratchCopyFn({ root: scratch.root, dir: scratch.dir })
     })
 
@@ -690,6 +730,10 @@ async function finishJob({
   // 'succeeded' branch below actually runs them.
   verify = null,
   runJobVerificationFn = defaultRunJobVerification,
+  // scratch-writers: { dir, root, base, writeScope } of a scoped writer's
+  // copy (still on disk here; startJob removes it after this returns).
+  writeCopy = null,
+  finalizeScratchWriteFn = defaultFinalizeScratchWrite,
 }) {
   const current = readResult(jobId, env)
   if (current.status === 'canceled') return // cancelJob already finalized this job
@@ -736,8 +780,22 @@ async function finishJob({
     updateResult(jobId, (cur) => ({ isolation: { ...(cur.isolation ?? {}), discardedPaths: scratchDiff.changed ? scratchDiff.paths : [] } }), env)
   }
 
+  // scratch-writers (S2, S4): runs while the copy still exists. The agent's
+  // in-scope diff is applied to the caller's tree only when it succeeded.
+  const finalizeWriteCopy = (apply) =>
+    finalizeScratchWriteFn({
+      dir: writeCopy.dir,
+      root: writeCopy.root,
+      base: writeCopy.base,
+      writeScope: writeCopy.writeScope,
+      patchPath: path.join(path.dirname(stdoutPath(jobId, env)), 'scope.patch'),
+      apply,
+      env,
+    })
+
   const error = adapter.classifyError(stdout, { timedOut, code: exitCode })
   if (error) {
+    const failedWrite = writeCopy ? await finalizeWriteCopy(false) : null
     // A print-timeout abandons the turn but agy still streamed partial text
     // (see agy.mjs classifyError) — keep it in response.txt like a normal
     // result, and persist sessionId so job_reply can resume that conversation.
@@ -759,6 +817,7 @@ async function finishJob({
         sessionId: error.sessionId ?? current.sessionId ?? null,
         ...(violation ? { readModeViolation: violation } : {}),
         ...(diffStats ? { diffStats } : {}),
+        ...(failedWrite ? { scratchWrite: failedWrite.scratchWrite } : {}),
         ...(effectiveVerify ? { verification: skippedVerification(`job ended failed (errorKind=${error.kind}); verification skipped`) } : {}),
       },
       env
@@ -833,7 +892,37 @@ async function finishJob({
     return
   }
 
-  const noChanges = mode === 'write' && Boolean(diff && !diff.unverifiable && !diff.changed)
+  let finalDiffStats = diffStats
+  let scratchWrite = null
+  if (writeCopy) {
+    const outcome = await finalizeWriteCopy(true)
+    scratchWrite = outcome.scratchWrite
+    finalDiffStats = outcome.diffStats
+    if (outcome.failure) {
+      updateResult(
+        jobId,
+        {
+          status: 'failed',
+          errorKind: outcome.failure.errorKind,
+          error: outcome.failure.error,
+          tokens: result.tokens ?? null,
+          costUsd: result.costUsd ?? null,
+          sessionId: result.sessionId ?? null,
+          toolDenials: result.toolDenials ?? [],
+          scratchWrite,
+          ...(effectiveVerify ? { verification: skippedVerification(`job ended failed (errorKind=${outcome.failure.errorKind}); verification skipped`) } : {}),
+        },
+        env
+      )
+      appendEvent(
+        { kind: 'job.failed', agent, model, cwd, title, jobId, errorKind: outcome.failure.errorKind, taskType, summary: summarize(outcome.failure.error), harness: eventHarness, waitMode: eventWaitMode, profile: eventProfile, profileStatus: eventProfileStatus },
+        { env }
+      )
+      return
+    }
+  }
+
+  const noChanges = writeCopy ? scratchWrite.appliedPaths.length === 0 : mode === 'write' && Boolean(diff && !diff.unverifiable && !diff.changed)
 
   // D2: the job just reached 'succeeded' -- run its verify checks here, in
   // the foreground, before this function returns. startJob releases the
@@ -865,7 +954,8 @@ async function finishJob({
       sessionId: result.sessionId ?? null,
       toolDenials: result.toolDenials ?? [],
       ...(noChanges ? { noChanges: true } : {}),
-      ...(diffStats ? { diffStats } : {}),
+      ...(finalDiffStats ? { diffStats: finalDiffStats } : {}),
+      ...(scratchWrite ? { scratchWrite } : {}),
       ...(verification ? { verification } : {}),
     },
     env
@@ -989,6 +1079,6 @@ export async function cancelJob(
   // jobId+pid legacy check when this process never held the token (e.g. a
   // job started before a restart), which then correctly refuses to release a
   // lease it cannot prove it owns — the lease expires on its own instead.
-  if (result.mode === 'write') releaseWriteLock({ cwd: result.cwd, token: entry?.leaseToken, jobId, env })
+  if (result.mode === 'write' && !result.writeScope) releaseWriteLock({ cwd: result.cwd, token: entry?.leaseToken, jobId, env })
   return updated
 }

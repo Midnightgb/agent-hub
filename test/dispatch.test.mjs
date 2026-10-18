@@ -858,3 +858,46 @@ test('computeDispatchKey scopes by workflowId without breaking the legacy hash',
   assert.equal(legacy, same, 'omitted workflowId keeps the exact legacy hash')
   assert.notEqual(legacy, other, 'same step in another workflow must not share a job')
 })
+
+test('scratch-writers S1: a write dispatch with writeScope forwards it and never reserves the per-cwd write lock', async () => {
+  let acquireLockCalled = false
+  let forwarded = null
+  const res = await dispatch({
+    task: 'scoped-write-task',
+    taskType: 'mechanical-edit',
+    cwd: '/tmp/primary-checkout',
+    mode: 'write',
+    writeScope: ['src/**'],
+    routeFn: async () => ({ primary: { agent: 'opencode', model: 'deepseek/deepseek-v4-flash', mode: 'write' }, fallbacks: [] }),
+    circuitBreakerOpenFn: () => false,
+    runPreflightFn: async () => ({ status: 'ready' }),
+    acquireWriteLockFn: () => {
+      acquireLockCalled = true
+      return { acquired: true, token: 'should-not-be-used' }
+    },
+    startJobFn: async (args) => {
+      forwarded = args
+      return { job: { jobId: 'job-scoped-1', agent: args.agent, model: args.model, status: 'queued', createdAt: new Date().toISOString(), dispatchKey: args.dispatchKey } }
+    },
+  })
+  assert.equal(acquireLockCalled, false, 'a scratch writer must not take the per-cwd write lock')
+  assert.deepEqual(forwarded.writeScope, ['src/**'])
+  assert.equal(forwarded.reservationToken ?? null, null)
+  assert.equal(res.job.jobId, 'job-scoped-1')
+})
+
+test('scratch-writers S1: dispatch rejects an invalid writeScope before routing', async () => {
+  let routed = false
+  const base = {
+    task: 'bad-scope',
+    cwd: '/tmp/x',
+    routeFn: async () => {
+      routed = true
+      return { primary: { agent: 'opencode', model: 'm' }, fallbacks: [] }
+    },
+    startJobFn: async () => assert.fail('startJob must not run'),
+  }
+  await assert.rejects(() => dispatch({ ...base, mode: 'write', writeScope: ['/abs'] }), /writeScope/)
+  await assert.rejects(() => dispatch({ ...base, mode: 'read', writeScope: ['src/**'] }), /writeScope.*mode.*write/)
+  assert.equal(routed, false)
+})
