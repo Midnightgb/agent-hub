@@ -46,6 +46,42 @@ function scopeLabel(learning: LearningT): string {
   return parts.length > 0 ? parts.join(" · ") : "any"
 }
 
+const HINT_LABEL: Record<string, string> = {
+  treatment_better: "helps",
+  control_better: "hurts",
+  no_difference: "no difference",
+  inconclusive: "inconclusive",
+}
+
+// Contrastive probe evidence (learning_probe): the latest probe's verdict hint
+// plus its two jobs, so the approver decides with evidence.
+function ProbeSummary({ learning }: { learning: LearningT }) {
+  const probes = learning.probes ?? []
+  if (probes.length === 0) return <span className="text-muted-foreground">—</span>
+  const latest = probes[probes.length - 1]
+  const hint = latest.comparison?.verdictHint
+  return (
+    <div className="flex flex-col gap-1 whitespace-normal">
+      <div className="flex items-center gap-1">
+        <Badge variant={hint === "treatment_better" ? "default" : "outline"}>
+          {hint ? HINT_LABEL[hint] : "running"}
+        </Badge>
+        {probes.length > 1 ? (
+          <span className="text-muted-foreground text-xs">{probes.length} probes</span>
+        ) : null}
+      </div>
+      {latest.comparison?.reason ? (
+        <span className="text-muted-foreground block max-w-xs break-words text-xs">
+          {latest.comparison.reason}
+        </span>
+      ) : null}
+      <span className="text-muted-foreground font-mono text-xs">
+        control {latest.controlJobId} · treatment {latest.treatmentJobId}
+      </span>
+    </div>
+  )
+}
+
 function sortLearnings(learnings: LearningT[]): LearningT[] {
   return [...learnings].sort((a, b) => {
     const aPending = a.status === "pending" ? 0 : 1
@@ -116,6 +152,12 @@ export function LearningsPanel() {
       cell: (learning) => (
         <Badge variant="outline">{learning.source === "mcp" ? "MCP" : "Dashboard"}</Badge>
       ),
+    },
+    {
+      key: "evidence",
+      header: "Evidence",
+      className: "align-top",
+      cell: (learning) => <ProbeSummary learning={learning} />,
     },
     {
       key: "status",
