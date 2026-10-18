@@ -265,3 +265,28 @@ test('same-tree-fanout S3: job_wait over MCP accepts jobIds and still answers a 
     await close()
   }
 })
+
+test('dispatch-caller-mode: the MCP dispatch tool passes mode through without inventing a default', async () => {
+  const { client, close } = await connect()
+  try {
+    const { tools } = await client.listTools()
+    const modeProp = tools.find((t) => t.name === 'dispatch').inputSchema.properties.mode
+    assert.equal('default' in modeProp, false, 'the dispatch mode argument has no schema default')
+
+    const errorText = async (args) => {
+      try {
+        const r = await client.callTool({ name: 'dispatch', arguments: args })
+        assert.equal(r.isError, true)
+        return r.content.map((c) => c.text).join('\n')
+      } catch (error) {
+        return String(error?.message ?? error)
+      }
+    }
+    const base = { task: 'caller-mode-mcp', cwd: '/tmp', taskType: 'mechanical-edit', writeScope: ['src/**'] }
+    // Both are rejected before routing, so nothing is ever spawned.
+    assert.match(await errorText(base), /writeScope requires an explicit mode "write"/, 'an omitted mode reaches dispatch as omitted')
+    assert.match(await errorText({ ...base, mode: 'read' }), /the effective mode for this dispatch is "read"/, 'an explicit mode reaches dispatch unchanged')
+  } finally {
+    await close()
+  }
+})

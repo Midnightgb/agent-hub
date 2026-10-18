@@ -476,12 +476,17 @@ export function buildServer() {
         'waitMode: "none" returns at create/start (generic default); "attention" also returns on waiting/attention ' +
         '(AWAITING_*/PAUSED, claude-code/opencode default); "terminal" waits for a terminal status only. ' +
         'An explicit waitMode always beats the harness default; the MCP client hint only supplies that default. ' +
-        'waiting≠failure — act via jules_interact/job_reply, then observe again.',
+        'waiting≠failure — act via jules_interact/job_reply, then observe again. ' +
+        'An explicit mode wins over every routed chain step\'s own mode (reported as modeOverride: {requested, stepMode} when they differ); ' +
+        'omit mode to let each chain step\'s declared mode apply (default read).',
       inputSchema: {
         task: z.string().min(1).describe('The prompt/task text.'),
         cwd: z.string().min(1),
         taskType: taskTypeArg.optional(),
-        mode: modeEnum.optional().default('read'),
+        mode: modeEnum.optional().describe(
+          'Explicit mode for every chain step (timeout, write lock, writeScope); a differing step mode is reported as modeOverride. ' +
+          'Omit to let each chain step\'s declared mode apply (fallback read). A writeScope requires an explicit mode "write".'
+        ),
         workflowStep: z.string().optional().describe('Workflow step identifier used in key derivation.'),
         dispatchKey: z.string().optional().describe('Explicit idempotency key. Defaults to sha256(task+cwd+taskType+workflowStep).'),
         attempt: z.number().int().positive().optional().default(1),

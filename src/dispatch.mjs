@@ -424,7 +424,16 @@ export async function dispatch({
   task,
   taskType,
   cwd,
-  mode = 'read',
+  // dispatch-caller-mode: an explicit caller mode ('read' | 'write') wins on
+  // every chain step (timeout, startJob, write-lock reservation, writeScope
+  // forwarding); a differing step mode is reported as `modeOverride`. When
+  // omitted, each chain step's own mode wins, falling back to 'read'.
+  mode = undefined,
+  // Legacy resolution for the workflow engine, whose node schema always
+  // defaults `mode` to 'read' (so it cannot tell an authored mode from a
+  // default): the chain step mode wins over `mode`, exactly as before
+  // dispatch-caller-mode. Never forwarded to startJob.
+  chainModeWins = false,
   workflowStep = null,
   dispatchKey = null,
   // Workflow scoping for the idempotency key (see computeDispatchKey).
@@ -512,7 +521,21 @@ export async function dispatch({
   if (Array.isArray(verify) && verify.length > 0) {
     verify.forEach(normalizeVerifyCheck)
   }
-  assertWriteScope(writeScope, mode)
+  const explicitMode = mode != null && !chainModeWins
+  // The pre-dispatch-caller-mode `mode` value: drives routing and the per-cwd
+  // write-lock decision exactly as before when no mode is given.
+  const baseMode = mode ?? 'read'
+  const modeForStep = (candidate) => (explicitMode ? mode : candidate?.mode ?? baseMode)
+  // A writeScope is never silently dropped: it is only accepted when every
+  // chain step is guaranteed to run write, i.e. an explicit mode 'write'.
+  if (writeScope != null && !(explicitMode && mode === 'write')) {
+    throw new Error(
+      explicitMode
+        ? `writeScope requires mode "write" (the effective mode for this dispatch is ${JSON.stringify(mode)})`
+        : 'writeScope requires an explicit mode "write" (no mode was given, so each chain step\'s own mode would apply and could drop the scope)'
+    )
+  }
+  assertWriteScope(writeScope, writeScope != null ? 'write' : baseMode)
 
   const profileMemo = new Map()
   const resolvedWorkflowId = workflowId ?? restDeps.workflowId ?? restDeps.workflow_id ?? null
@@ -710,7 +733,7 @@ export async function dispatch({
       primaryCandidate = restDeps.candidate
       fallbackCandidates = restDeps.fallbacks ? [...restDeps.fallbacks] : []
     } else {
-      const routeResult = await routeFn({ taskType, mode, env })
+      const routeResult = await routeFn({ taskType, mode: baseMode, env })
       if (!routeResult || !routeResult.primary) {
         throw new Error(routeResult?.reason || `No available candidate for taskType "${taskType}"`)
       }
@@ -866,8 +889,10 @@ export async function dispatch({
 
     const resolvedSessionId = matchedSessionId ?? restDeps.job?.remote?.sessionId ?? restDeps.job?.sessionId ?? restDeps.sessionId ?? null
 
-    // 5. Worktree reservation (honest reservation token)
-    if (mode === 'write' && !isRemote && writeScope == null) {
+    // 5. Worktree reservation (honest reservation token). An explicit mode
+    // decides it for every chain step; without one this keeps the historical
+    // 'read' default (the chain step mode never reserved the lock here).
+    if (baseMode === 'write' && !isRemote && writeScope == null) {
       const lock = acquireWriteLockFn({ cwd, jobId: execId, env })
       if (!lock.acquired) {
         const err = new Error(`Worktree locked: ${lock.reason}`)
@@ -930,11 +955,12 @@ export async function dispatch({
       async (activeCtx) => {
         const candidate = activeCtx.candidate
         const attemptNum = (activeCtx.attempt ?? 0) + (attempt || 1)
+        const stepMode = modeForStep(candidate)
 
         const effectiveTimeoutS = calculateTimeoutFn({
           agent: candidate.agent,
           model: candidate.model,
-          mode: candidate.mode ?? mode,
+          mode: stepMode,
           taskType,
           explicit: timeoutS,
           attempt: attemptNum,
@@ -988,7 +1014,7 @@ export async function dispatch({
           model: candidate.model,
           task,
           cwd,
-          mode: candidate.mode ?? mode,
+          mode: stepMode,
           timeoutS: effectiveTimeoutS,
           taskType,
           dispatchKey: key,
@@ -1007,7 +1033,7 @@ export async function dispatch({
           verify,
           ...(isolation ? { isolation } : {}),
           ...(output ? { output } : {}),
-          ...(writeScope != null && (candidate.mode ?? mode) === 'write' ? { writeScope } : {}),
+          ...(writeScope != null && stepMode === 'write' ? { writeScope } : {}),
           profile,
           profileStatus,
           // Resolved contract always wins over caller extras.
@@ -1044,6 +1070,11 @@ export async function dispatch({
 
     const finalSessionId =
       execResult?.sessionId ?? finalJob?.sessionId ?? finalJob?.remote?.sessionId ?? resolvedSessionId ?? null
+    // dispatch-caller-mode: report when the caller's explicit mode replaced
+    // the declared mode of the chain step that actually ran.
+    const modeOverride = explicitMode && finalCandidate?.mode != null && finalCandidate.mode !== mode
+      ? { requested: mode, stepMode: finalCandidate.mode }
+      : null
     const parallelJobs = fanout
       ? await startParallelReviewers({ candidate: finalCandidate, primaryJob: finalJob, task, cwd, taskType, timeoutS, workflowStep, workflowId: resolvedWorkflowId, label, rootExecutionId: rootExecutionId ?? execId, parentExecutionId: execId, isolation, output, env, startJobFn })
       : null
@@ -1053,6 +1084,7 @@ export async function dispatch({
       executionId: execId,
       candidate: finalCandidate,
       sessionId: finalSessionId,
+      ...(modeOverride ? { modeOverride } : {}),
       ...(parallelJobs ? { parallelJobs } : {}),
     }, finalCandidate)
   } finally {

@@ -930,3 +930,141 @@ test('scratch-writers B4: dispatches differing only in writeScope start separate
   assert.deepEqual(started, [['src/one.txt'], ['src/two.txt']])
   assert.notEqual(r1.job.jobId, r2.job.jobId)
 })
+
+// dispatch-caller-mode: an explicit caller `mode` wins over the routed chain
+// step's declared mode on every step; without one, the step mode still wins.
+function modeHarness(primary, { fallbacks = [] } = {}) {
+  const seen = { startJob: [], timeoutModes: [], lockCalls: 0, routed: 0 }
+  const deps = {
+    cwd: '/tmp/test-caller-mode',
+    taskType: 'mechanical-edit',
+    routeFn: async () => {
+      seen.routed++
+      return { primary, fallbacks }
+    },
+    circuitBreakerOpenFn: () => false,
+    runPreflightFn: async () => ({ status: 'ready' }),
+    calculateTimeoutFn: ({ mode }) => {
+      seen.timeoutModes.push(mode)
+      return 60
+    },
+    acquireWriteLockFn: () => {
+      seen.lockCalls++
+      return { acquired: true, token: 'caller-mode-token' }
+    },
+    startJobFn: async (args) => {
+      seen.startJob.push(args)
+      return {
+        job: { jobId: `job-caller-mode-${seen.startJob.length}-${args.dispatchKey.slice(0, 8)}`, agent: args.agent, model: args.model, mode: args.mode, status: 'queued', createdAt: new Date().toISOString(), dispatchKey: args.dispatchKey },
+        done: Promise.resolve(),
+      }
+    },
+  }
+  return { seen, deps }
+}
+
+test('dispatch-caller-mode: an explicit mode "read" beats a write chain step (startJob, timeout, no write lock) and records modeOverride', async () => {
+  const { seen, deps } = modeHarness({ agent: 'opencode', model: 'm', mode: 'write' })
+  const res = await dispatch({ ...deps, task: 'caller-mode-explicit-read', mode: 'read' })
+  assert.equal(seen.startJob.length, 1)
+  assert.equal(seen.startJob[0].mode, 'read', 'startJob runs the caller mode')
+  assert.deepEqual(seen.timeoutModes, ['read'], 'the timeout is computed for the caller mode')
+  assert.equal(seen.lockCalls, 0, 'a read dispatch never reserves the per-cwd write lock')
+  assert.equal(seen.startJob[0].reservationToken ?? null, null)
+  assert.deepEqual(res.modeOverride, { requested: 'read', stepMode: 'write' })
+})
+
+test('dispatch-caller-mode: an explicit mode "write" beats a read chain step: the write lock is reserved and the job runs write', async () => {
+  const { seen, deps } = modeHarness({ agent: 'opencode', model: 'm', mode: 'read' })
+  const res = await dispatch({ ...deps, task: 'caller-mode-explicit-write', mode: 'write' })
+  assert.equal(seen.lockCalls, 1, 'the per-cwd write lock is reserved')
+  assert.equal(seen.startJob[0].mode, 'write')
+  assert.equal(seen.startJob[0].reservationToken, 'caller-mode-token')
+  assert.deepEqual(seen.timeoutModes, ['write'])
+  assert.deepEqual(res.modeOverride, { requested: 'write', stepMode: 'read' })
+})
+
+test('dispatch-caller-mode: an explicit mode "write" with a writeScope always forwards the scope, even on a read chain step', async () => {
+  const { seen, deps } = modeHarness({ agent: 'opencode', model: 'm', mode: 'read' })
+  const res = await dispatch({ ...deps, task: 'caller-mode-explicit-scoped-write', mode: 'write', writeScope: ['src/**'] })
+  assert.equal(seen.startJob[0].mode, 'write')
+  assert.deepEqual(seen.startJob[0].writeScope, ['src/**'], 'the writeScope is never silently dropped')
+  assert.equal(seen.lockCalls, 0, 'a scratch writer still takes no per-cwd write lock')
+  assert.deepEqual(res.modeOverride, { requested: 'write', stepMode: 'read' })
+})
+
+test('dispatch-caller-mode: the explicit mode also wins on a fallback step and modeOverride reports the step that ran', async () => {
+  let call = 0
+  const { seen, deps } = modeHarness({ agent: 'agy', model: 'a', mode: 'read' }, { fallbacks: [{ agent: 'opencode', model: 'b', mode: 'write' }] })
+  const inner = deps.startJobFn
+  deps.startJobFn = async (args) => {
+    call++
+    if (call === 1) {
+      seen.startJob.push(args)
+      return { job: { jobId: 'job-caller-mode-fail', agent: args.agent, model: args.model, status: 'failed', errorKind: 'unknown', error: 'boom', createdAt: new Date().toISOString(), dispatchKey: args.dispatchKey } }
+    }
+    return inner(args)
+  }
+  const res = await dispatch({ ...deps, task: 'caller-mode-fallback', mode: 'read', category: 'default', executeWithPolicyFn: async (fn, _resolve, ctx) => {
+    const first = await fn({ ...ctx, attempt: 0 })
+    if (first.status !== 'failed') return first
+    return fn({ ...ctx, candidate: ctx.fallbacks[0], attempt: 1 })
+  } })
+  assert.deepEqual(seen.startJob.map((a) => a.mode), ['read', 'read'], 'every chain step runs the caller mode')
+  assert.equal(res.candidate.agent, 'opencode')
+  assert.deepEqual(res.modeOverride, { requested: 'read', stepMode: 'write' })
+})
+
+test('dispatch-caller-mode: without an explicit mode the chain step mode still wins (previous behavior) and no modeOverride is reported', async () => {
+  const write = modeHarness({ agent: 'opencode', model: 'm', mode: 'write' })
+  const resWrite = await dispatch({ ...write.deps, task: 'caller-mode-implicit-write-step' })
+  assert.equal(write.seen.startJob[0].mode, 'write', 'the write step mode wins')
+  assert.deepEqual(write.seen.timeoutModes, ['write'])
+  assert.equal(write.seen.lockCalls, 0, 'unchanged: an implicit-mode dispatch reserves no per-cwd lock itself')
+  assert.equal('modeOverride' in resWrite, false)
+
+  const bare = modeHarness({ agent: 'opencode', model: 'm' })
+  const resBare = await dispatch({ ...bare.deps, task: 'caller-mode-implicit-bare-step' })
+  assert.equal(bare.seen.startJob[0].mode, 'read', 'a step without a mode falls back to read')
+  assert.equal('modeOverride' in resBare, false)
+})
+
+test('dispatch-caller-mode: an explicit mode equal to the step mode reports no modeOverride', async () => {
+  const { deps } = modeHarness({ agent: 'opencode', model: 'm', mode: 'write' })
+  const res = await dispatch({ ...deps, task: 'caller-mode-same', mode: 'write' })
+  assert.equal('modeOverride' in res, false)
+})
+
+test('dispatch-caller-mode: chainModeWins keeps the legacy resolution for the workflow engine (step mode wins, lock follows the passed mode)', async () => {
+  const { seen, deps } = modeHarness({ agent: 'opencode', model: 'm', mode: 'write' })
+  const res = await dispatch({ ...deps, task: 'caller-mode-workflow-legacy', mode: 'read', chainModeWins: true })
+  assert.equal(seen.startJob[0].mode, 'write')
+  assert.equal(seen.lockCalls, 0)
+  assert.equal('modeOverride' in res, false)
+  assert.equal('chainModeWins' in seen.startJob[0], false, 'the flag is not forwarded to startJob')
+})
+
+test('dispatch-caller-mode: a writeScope whose effective mode is not write is rejected before routing, reservation or startJob', async () => {
+  const explicitRead = modeHarness({ agent: 'opencode', model: 'm', mode: 'write' })
+  await assert.rejects(
+    () => dispatch({ ...explicitRead.deps, task: 'caller-mode-scope-read', mode: 'read', writeScope: ['src/**'] }),
+    /writeScope requires mode "write" \(the effective mode for this dispatch is "read"\)/
+  )
+  const implicit = modeHarness({ agent: 'opencode', model: 'm', mode: 'write' })
+  await assert.rejects(
+    () => dispatch({ ...implicit.deps, task: 'caller-mode-scope-implicit', writeScope: ['src/**'] }),
+    /writeScope requires an explicit mode "write"/
+  )
+  for (const { seen } of [explicitRead, implicit]) {
+    assert.equal(seen.routed, 0)
+    assert.equal(seen.lockCalls, 0)
+    assert.equal(seen.startJob.length, 0)
+  }
+})
+
+test('dispatch-caller-mode: parallelWith reviewers stay read-only even when the caller forces mode "write" on the primary', async () => {
+  const { seen, deps } = modeHarness({ agent: 'agy', model: 'm', mode: 'read', parallelWith: { agent: 'copilot', model: 'auto', mode: 'read' } })
+  const res = await dispatch({ ...deps, task: 'caller-mode-fanout', mode: 'write', fanout: true })
+  assert.deepEqual(seen.startJob.map((a) => [a.agent, a.mode]), [['agy', 'write'], ['copilot', 'read']])
+  assert.equal(res.parallelJobs.length, 1)
+})
