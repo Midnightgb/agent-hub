@@ -117,13 +117,58 @@ not rehydrate automatically. It surfaces as a failed turn; call
 
 ## Write-mode gate
 
-Only write mode needs a worktree; read jobs run in the caller's checkout (see
-"Read-mode isolation and guard" below). A `delegate()`/`job_reply()` call with
-`mode: 'write'` requires `cwd` to be
+Only write mode without a `writeScope` needs a worktree; read jobs run in the
+caller's checkout (see "Read-mode isolation and guard" below) and scoped
+writers in a scratch copy (see "Scratch writers" below). A
+`delegate()`/`job_reply()` call with `mode: 'write'` and no `writeScope`
+requires `cwd` to be
 a secondary `git worktree add` checkout (see `src/worktree.mjs`), plus a
 per-cwd single-writer lock — this keeps an agent CLI from editing the same
 working tree Claude Code (or another job) is using, and keeps two write jobs
 from racing on the same worktree.
+
+## Scratch writers
+
+`delegate`/`dispatch` with `mode: 'write'` and a `writeScope` (repo-relative
+globs) run the agent in a scratch copy of the caller's repository (the same
+private `git clone --shared` read jobs use), even when `cwd` is the primary
+checkout. No worktree gate, write allowlist or per-cwd lock applies. The hub
+commits the copy's starting state as a base; when the agent succeeds, every
+change it made against that base (commits included) is split by the scope:
+
+- in scope: applied to the caller's **working tree** with `git apply`
+  (never the index, refs or config), recorded as
+  `scratchWrite.appliedPaths`; diff stats count only these paths;
+- out of scope: not applied, recorded as `scratchWrite.discardedPaths`.
+
+Scope entries match as `:(top,glob)<entry>` from the repository root: `*`
+stays within one directory level, `**` crosses levels, a bare directory name
+matches everything below it, and `[...]` is a character class (so `src/[x].txt`
+matches `src/x.txt`). Absolute paths, `..`, empty entries and entries
+starting with `:` are rejected before any job exists, as is a `writeScope` on a
+read job or a remote agent.
+
+The apply step is all or nothing and serialized per repository by a short lock
+(`runs/.locks/apply-*`; a stale holder is reclaimed by dead pid or after 2
+minutes; a wait over 30 s ends the job `errorKind: 'locked'`). The caller's own
+edits to other files during the run are never touched, and two writers with
+disjoint scopes both apply. When the in-scope patch does not apply to the
+caller's current tree (the caller or another writer changed the same lines),
+nothing is applied: the job ends `failed` with `errorKind: 'apply_conflict'`
+naming `scratchWrite.conflictPaths`. The patch is always kept at
+`runs/<jobId>/scope.patch` (`scratchWrite.patchPath`), also when the agent
+itself failed, so the work can be applied by hand. No copy means
+`errorKind: 'scratch_unavailable'`; a scoped writer never falls back to writing
+in place. `job_reply` on a scoped writer inherits its `writeScope` (each turn
+gets a fresh copy that already contains the previous turns' applied changes),
+and `verify` checks run in the caller's `cwd` after the apply.
+
+The diff is taken against the copy's starting state, which includes the
+caller's uncommitted changes. An agent that rewinds history in the copy (for
+example `git reset --hard HEAD~1` or `git checkout -- <path>`) therefore
+produces a diff that **reverts** those caller changes inside the scope, and the
+apply writes that revert to the caller's tree. Tell writers not to reset or
+check out files, and review `scratchWrite.appliedPaths` with `git diff`.
 
 ## Metrics and adaptive timeouts
 

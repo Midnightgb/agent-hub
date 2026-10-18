@@ -12,6 +12,7 @@ import { ADAPTIVE_TIMEOUT } from './config.mjs'
 import { classifyError } from './policy/taxonomy.mjs'
 import { adapterFor as defaultAdapterFor } from './adapters/index.mjs'
 import { normalizeVerifyCheck } from './verify.mjs'
+import { assertWriteScope } from './scratchwrite.mjs'
 import { cancelJob as defaultCancelJob } from './jobrunner.mjs'
 import { resolveHarness, normalizeWaitMode } from './harness/registry.mjs'
 import { resolveAgyProfile, listAgysProfiles, isAgysAvailable } from './providers/agys.mjs'
@@ -193,13 +194,16 @@ const recentDispatches = new Map()
  * reusing another run's terminal record and "succeeding" in 0s). Omitted
  * workflowId keeps the exact legacy hash (backward compatible).
  */
-export function computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId = null, label = null } = {}) {
+export function computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId = null, label = null, writeScope = null } = {}) {
   const hash = crypto.createHash('sha256')
   hash.update(`${task ?? ''}${cwd ?? ''}${taskType ?? ''}${workflowStep ?? ''}${workflowId ?? ''}`)
   // same-tree-fanout (S4): a per-call label lets N identical reviewer
   // dispatches fan out instead of collapsing into one job. Separated by a NUL
   // so it can never collide with a task/cwd suffix; omitted keeps the legacy hash.
   if (label != null && label !== '') hash.update(`\0label:${label}`)
+  // scratch-writers: writers on disjoint scopes of the same task are distinct
+  // jobs. Sorted so the scope order never matters; omitted keeps the legacy hash.
+  if (Array.isArray(writeScope) && writeScope.length > 0) hash.update(`\0writeScope:${[...writeScope].sort().join('\0')}`)
   return hash.digest('hex')
 }
 
@@ -439,6 +443,10 @@ export async function dispatch({
   label = null,
   // same-tree-fanout (S5): forwarded to startJob for every job this dispatch starts.
   output = undefined,
+  // scratch-writers (S1): repo-relative globs forwarded to startJob for a
+  // write job; such a writer runs in a scratch copy, so no per-cwd write
+  // lock is reserved for it below.
+  writeScope = undefined,
   // same-tree-fanout (S6): also start the read-only parallelWith reviewer(s)
   // declared on the launched chain step; returned as parallelJobs.
   fanout = false,
@@ -504,10 +512,11 @@ export async function dispatch({
   if (Array.isArray(verify) && verify.length > 0) {
     verify.forEach(normalizeVerifyCheck)
   }
+  assertWriteScope(writeScope, mode)
 
   const profileMemo = new Map()
   const resolvedWorkflowId = workflowId ?? restDeps.workflowId ?? restDeps.workflow_id ?? null
-  const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId, label })
+  const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId, label, writeScope })
   // Harness profile + effective wait contract, resolved once per dispatch.
   // An explicit waitMode always wins over every profile default.
   const harnessProfile = resolveHarness({ explicit: harness, env, clientHint })
@@ -858,7 +867,7 @@ export async function dispatch({
     const resolvedSessionId = matchedSessionId ?? restDeps.job?.remote?.sessionId ?? restDeps.job?.sessionId ?? restDeps.sessionId ?? null
 
     // 5. Worktree reservation (honest reservation token)
-    if (mode === 'write' && !isRemote) {
+    if (mode === 'write' && !isRemote && writeScope == null) {
       const lock = acquireWriteLockFn({ cwd, jobId: execId, env })
       if (!lock.acquired) {
         const err = new Error(`Worktree locked: ${lock.reason}`)
@@ -998,6 +1007,7 @@ export async function dispatch({
           verify,
           ...(isolation ? { isolation } : {}),
           ...(output ? { output } : {}),
+          ...(writeScope != null && (candidate.mode ?? mode) === 'write' ? { writeScope } : {}),
           profile,
           profileStatus,
           // Resolved contract always wins over caller extras.

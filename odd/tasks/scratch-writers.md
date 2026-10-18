@@ -1,0 +1,56 @@
+# ODD Feature: scratch-writers (same-tree-fanout phase 2)
+
+Objective: let Claude Code delegate write jobs that run in parallel against its own checkout without a caller-managed worktree. Each writer works in a hub-managed scratch copy, and the hub applies only the diff inside the writer's declared `writeScope` back to the caller's tree.
+Branch: `feat/scratch-writers` (from `main` 6589bb1). Delivery: `ask-on-risk`; forecast ~700 authored lines; chain strategy `feature-branch-chain` reused from phase 1 (L4 of `odd/tasks/same-tree-fanout.md`). Runner: `npm test` (node --test).
+
+## Specs
+
+User decision, quoted verbatim from the chosen option (L2): "Copia + aplicar (Recommended)" — "El escritor trabaja en una copia temporal como agy en la fase 1. Al terminar, el hub aplica a tu árbol solo el diff dentro de su writeScope. Atribución exacta, tus ediciones en paralelo no lo afectan y lo que escriba fuera del scope se descarta. Si tú y el escritor tocan el mismo archivo, el job termina en conflicto y el parche queda guardado para que lo resuelvas."
+
+- **S1 — Opt-in scratch writer.** "El escritor trabaja en una copia temporal como agy en la fase 1."
+  - Acceptance: `delegate`/`dispatch` with `mode:'write'` and a non-empty `writeScope` (repo-relative globs) run in a scratch copy of the caller's repo, created with the phase-1 `createScratchCopy`, even when `cwd` is the primary checkout.
+  - The agent runs in the same subdirectory of the copy as the caller's `cwd`.
+  - `mode:'write'` without `writeScope` is unchanged: the worktree gate, the per-cwd lock and in-place writes behave as before.
+  - An invalid `writeScope` (absolute path, `..`, empty string) is rejected before any job record exists.
+  - If no copy can be made, the job fails with `errorKind:'scratch_unavailable'` and the reason. It never falls back to writing in place.
+- **S2 — Apply only the in-scope diff.** "Al terminar, el hub aplica a tu árbol solo el diff dentro de su writeScope."
+  - Acceptance: when the agent succeeds, the hub computes the agent's own changes in the copy against the copy's starting state, including commits the agent made.
+  - Paths matching `writeScope` are applied to the caller's working tree (never its index, refs or config) and recorded as `scratchWrite.appliedPaths`.
+  - Paths outside the scope are not applied and are recorded as `scratchWrite.discardedPaths`.
+  - Diff stats report only the applied paths.
+  - An agent that changed nothing in scope ends `succeeded` with `noChanges:true`.
+- **S3 — Parallel caller edits do not interfere.** "Atribución exacta, tus ediciones en paralelo no lo afectan."
+  - Acceptance: the caller (or a sibling job) editing other files in the caller's tree during the run never fails the writer and is never reverted.
+  - Two scratch writers on the same repo with disjoint scopes both apply.
+  - Applying is serialized per repository by a short lock.
+- **S4 — Conflicts keep the patch.** "Si tú y el escritor tocan el mismo archivo, el job termina en conflicto y el parche queda guardado para que lo resuelvas."
+  - Acceptance: when the in-scope patch does not apply cleanly to the caller's current tree, nothing is applied (all or nothing). The job ends `failed` with `errorKind:'apply_conflict'`, naming the conflicting paths.
+  - The full in-scope patch is saved as `runs/<jobId>/scope.patch` and its path is returned as `scratchWrite.patchPath`.
+- **S5 — Docs, tools and skills.** Assumption (from the phase-1 proposal, not re-quoted): the MCP params, help text, `docs/execution.md`, `docs/reference/tools.md`, CHANGELOG and `skills/multi-agent-orchestrator/SKILL.md` "Parallel writes" describe scratch writers as the default way to parallelize writes, and keep worktrees for writers without a scope.
+
+Assumptions:
+- `job_reply` on a scratch-writer parent inherits its `writeScope`; each turn gets a fresh copy, which already contains the previous turns' applied changes.
+- `verify` checks keep running in the caller's `cwd`, after the apply.
+
+Out of scope: changing the existing worktree gate, the write allowlist or the per-cwd lock for scope-less writers; the `dispatch` chain-mode override; rollback of an applied patch.
+
+## Tasks
+
+| ID | Specs | Route | Status | Evidence |
+|----|-------|-------|--------|----------|
+| T1 | S1-S4 | delegated writer (context backstop: long parent session) | done | `080570d` on `feat/scratch-writers-01-apply`; RED 12/15 + 2 dispatch -> GREEN `test/scratch-writers.test.mjs` 15/15; focused 65/65; suite 1761/1761; parent spot check 43/43 |
+| T2 | S5 + MCP params | inline | done | `0682c24` on `feat/scratch-writers-02-docs` (MCP params landed in T1); passive docs + help text; suite 1761/1761 |
+| T3 | S1-S5 | delegated verifier (high risk: write path, concurrency) | done | baseline `6589bb1`; first pass S4/S5 PASS, B1-B4 found; fix `5850f06`; recheck: B1-B4 FIXED, 0 overlaps in 12x150 stress, no regression vs baseline; suite 1766/1766 |
+
+Route evidence: T1 goes to a writer under the long-session backstop. The parent context is past ~150k after phase 1. Risk items 1 (writes to the caller's tree), 2 (write guard semantics) and 4 (concurrent apply) fire the Verification trigger.
+
+## Log
+
+- L1 (2026-10-18, user, verbatim): "ya reconecte ,entones seguimos con la siguiente fase o pr primero tu la aceotas y sigues ?" then "si dale" (to: merge phase 1 PRs, reinstall from main, start phase 2).
+- L2 (2026-10-18, user choice, verbatim option): "Copia + aplicar (Recommended)".
+- L3: Design inputs from phase 1. `createScratchCopy` (`src/scratchcopy.mjs`) makes a `git clone --shared` with no origin and hooks disabled, replaying uncommitted and untracked state. The whole-tree read guard cannot attribute changes, which is why writers must not run in place. `src/worktree.mjs` holds the existing gate and per-cwd lock. `src/diffstats.mjs` `computeDiffStats({cwd, baseCommit})`.
+- L4: T1 done (writer). Deviations, accepted: an apply-lock wait over 30 s fails with `errorKind:'locked'` and keeps the patch (stale holders are reclaimed by dead pid or age over 2 min); a failed agent still saves `scope.patch`; extra `scratchWrite` fields `applied`, `unappliedPaths`, `conflictPaths`, `reason`; scope entries match as `:(top,glob)<entry>` (`*` within one level, `**` across levels, a bare dir matches below), `:`-prefixed entries are rejected, and remote agents are rejected; renames count as delete+add. Size ~980 authored lines (a new module plus one test per rule). Open risks for T3: a TOCTOU between `--check` and apply; conflict paths are a best guess when git stderr is unparseable; gitattributes/eol differences untested; an agent history rewind in the copy becomes part of its diff.
+- L5: T3 verifier blockers. B1: user `diff.noprefix=true` breaks every scoped write (patch without a/ b/ prefixes) and the copy replay. B2: a cancel during the apply-lock wait still applies the patch. B3: the apply lock is not exclusive across processes (empty-file window plus a check-then-delete reclaim; 26 overlapping holds in a 12x150 stress test). B4: dispatch dedupes writers whose scopes differ (writeScope missing from dispatchKey). One correction batch delegated to the T1 writer on `feat/scratch-writers-03-verify-fixes`. The parent documented two advisories (history rewind in the copy reverts caller changes in scope; glob character classes). Also seen: 2 full-suite timing flakes that pass in isolation (`cancelJob also interrupts...`, `listTools() resolves quickly...`).
+- L6: T3 recheck of `5850f06`: B1-B4 FIXED. Under normal contention the stress test showed 0 overlaps in 1800 acquisitions (26 before the fix). Residual race (advisory): when 30% of holders crash artificially, the rename-aside reclaim gave 3 overlaps in 1800. It needs a stale lock plus three contending processes inside one rename window, and it cannot happen within one hub process (applies are synchronous). Possible follow-up: serialize reclaim with a second link guard or flock. Phase-1 reads and unscoped writes match baseline byte for byte.
+- L7: Live test through the installed MCP (`aceec71`, `--allow-branch`) on a throwaway repo with an uncommitted caller README edit. agy (`gemini-3.8-flash-medium`, scope `src/a/**`) and opencode (`deepseek-v4.1-flash-free`, scope `src/b/**`) ran in parallel while the caller edited README again. Both succeeded and applied exactly their file. agy's out-of-scope README line and opencode's `.atl/*` registry files were discarded. Both caller README edits were kept. Refs, config and index were unchanged, and no scratch copies were left. Forced conflict: an agy writer on `src/shared/**` changed `mode=prod` while the caller changed the same line to `mode=dev`. The job ended `failed/apply_conflict` naming `src/shared/conf.txt`, the caller tree hashes were unchanged, and `scope.patch` held the writer's change. Note: after `/mcp` the deferred `delegate` schema still showed the phase-1 description without `writeScope`, but the server accepted the parameter.
+

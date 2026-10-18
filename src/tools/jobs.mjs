@@ -13,6 +13,7 @@ import * as defaultJulesAdapter from '../cloud/jules/adapter.mjs'
 import { getDb, listAgentMessages, markAgentMessageDelivered } from '../storage/index.mjs'
 import { listAgysProfilesSync } from '../providers/agys.mjs'
 import { normalizeVerifyCheck } from '../verify.mjs'
+import { assertWriteScope } from '../scratchwrite.mjs'
 
 /** Reject a caller-supplied taskType that is not one of schemas.mjs TASK_TYPES. */
 function assertTaskType(taskType) {
@@ -38,6 +39,18 @@ function jobStatusView(result) {
     // when the job was given a `verify` array (docs/verification.md).
     verification: result.verification ?? null,
     ...readIsolationView(result),
+    ...scratchWriteView(result),
+  }
+}
+
+/**
+ * scratch-writers (S2, S4): a scoped writer's scope and what was applied,
+ * discarded or left in its saved patch. Absent for every other job.
+ */
+function scratchWriteView(result) {
+  return {
+    ...(result.writeScope ? { writeScope: result.writeScope } : {}),
+    ...(result.scratchWrite ? { scratchWrite: result.scratchWrite } : {}),
   }
 }
 
@@ -95,11 +108,15 @@ export function delegateTool({
   isolation,
   // same-tree-fanout (S5): 'review' asks for findings JSON (job_result parses it).
   output,
+  // scratch-writers (S1): repo-relative globs; a write job with a scope runs
+  // in a scratch copy and only its in-scope diff is applied to cwd's repo.
+  writeScope,
   startJobFn = defaultStartJob,
   listAgysProfilesFn = listAgysProfilesSync,
   env = process.env,
 }) {
   assertTaskType(taskType)
+  assertWriteScope(writeScope, mode)
   if (Array.isArray(verify) && verify.length > 0) {
     verify.forEach(normalizeVerifyCheck)
   }
@@ -135,6 +152,7 @@ export function delegateTool({
     verify,
     ...(isolation ? { isolation } : {}),
     ...(output ? { output } : {}),
+    ...(writeScope != null ? { writeScope } : {}),
   })
   return { jobId: job.jobId, status: job.status, errorKind: job.errorKind ?? null }
 }
@@ -356,6 +374,9 @@ export async function jobReplyTool({
     allowlist: WRITE_ALLOWLIST,
     // same-tree-fanout (S5): a reply to a review job is still a review turn.
     ...(parent.output ? { output: parent.output } : {}),
+    // scratch-writers: a write reply to a scoped writer stays scoped; each
+    // turn gets a fresh copy that already holds the previous turns' applies.
+    ...(effectiveMode === 'write' && parent.writeScope ? { writeScope: parent.writeScope } : {}),
   })
   return { jobId: job.jobId, status: job.status, parentJobId: jobId, errorKind: job.errorKind ?? null, turnDepth, warning }
 }
@@ -460,6 +481,7 @@ export function jobResultTool({ jobId, maxLines = 20, tailLines = 10 }) {
     errorKind: result.errorKind ?? null,
     verification: result.verification ?? null,
     ...readIsolationView(result),
+    ...scratchWriteView(result),
     ...reviewView(result, fullText),
   }
 }
