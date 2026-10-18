@@ -245,3 +245,23 @@ test('delegate returns its job record instead of crashing on the registered hand
     await close()
   }
 })
+
+test('same-tree-fanout S3: job_wait over MCP accepts jobIds and still answers a single jobId, both passing the output schema', async () => {
+  const { client, home, close } = await connect()
+  try {
+    writeFakeJob(home, { jobId: 'fanout-a' })
+    writeFakeJob(home, { jobId: 'fanout-b' })
+    const many = await client.callTool({ name: 'job_wait', arguments: { jobIds: ['fanout-a', 'fanout-b'], timeoutS: 5 } })
+    assert.notEqual(many.isError, true, JSON.stringify(many.content))
+    assert.deepEqual(many.structuredContent.jobs.map((j) => j.jobId), ['fanout-a', 'fanout-b'])
+    assert.deepEqual(many.structuredContent.pending, [])
+    assert.equal(many.structuredContent.done, true)
+
+    const one = await client.callTool({ name: 'job_wait', arguments: { jobId: 'fanout-a', timeoutS: 5 } })
+    assert.notEqual(one.isError, true, JSON.stringify(one.content))
+    assert.equal(one.structuredContent.jobId, 'fanout-a')
+    assert.equal(one.structuredContent.status, 'succeeded')
+  } finally {
+    await close()
+  }
+})

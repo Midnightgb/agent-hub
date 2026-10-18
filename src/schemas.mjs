@@ -274,6 +274,21 @@ export const JobRecord = z
   })
   .passthrough()
 
+/**
+ * same-tree-fanout (S3): job_wait returns one JobRecord for `jobId`, or a
+ * fan-out view for `jobIds`: `jobs` in caller order, plus which ids are
+ * `completed` and which are still `pending`.
+ */
+export const JobWaitResponse = JobRecord.partial()
+  .extend({
+    jobs: z.array(JobRecord).optional(),
+    completed: z.array(z.string()).optional(),
+    pending: z.array(z.string()).optional(),
+    done: z.boolean().optional(),
+    timedOut: z.boolean().optional(),
+  })
+  .passthrough()
+
 export const QuotaWindow = z
   .object({
     id: z.string(),

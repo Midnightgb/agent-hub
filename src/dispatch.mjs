@@ -144,9 +144,13 @@ const recentDispatches = new Map()
  * reusing another run's terminal record and "succeeding" in 0s). Omitted
  * workflowId keeps the exact legacy hash (backward compatible).
  */
-export function computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId = null } = {}) {
+export function computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId = null, label = null } = {}) {
   const hash = crypto.createHash('sha256')
   hash.update(`${task ?? ''}${cwd ?? ''}${taskType ?? ''}${workflowStep ?? ''}${workflowId ?? ''}`)
+  // same-tree-fanout (S4): a per-call label lets N identical reviewer
+  // dispatches fan out instead of collapsing into one job. Separated by a NUL
+  // so it can never collide with a task/cwd suffix; omitted keeps the legacy hash.
+  if (label != null && label !== '') hash.update(`\0label:${label}`)
   return hash.digest('hex')
 }
 
@@ -381,6 +385,9 @@ export async function dispatch({
   // same-tree-fanout (S2): read-job isolation forwarded to startJob
   // ('auto' | 'in-place' | 'scratch'); undefined keeps startJob's default.
   isolation = undefined,
+  // same-tree-fanout (S4): distinguishes otherwise-identical fan-out calls in
+  // the derived dispatchKey (ignored when an explicit dispatchKey is given).
+  label = null,
   env = process.env,
   // Harness wait contract: waitMode 'none' returns at create/start,
   // 'attention' observes until terminal OR waiting/attention, 'terminal'
@@ -446,7 +453,7 @@ export async function dispatch({
 
   const profileMemo = new Map()
   const resolvedWorkflowId = workflowId ?? restDeps.workflowId ?? restDeps.workflow_id ?? null
-  const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId })
+  const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId, label })
   // Harness profile + effective wait contract, resolved once per dispatch.
   // An explicit waitMode always wins over every profile default.
   const harnessProfile = resolveHarness({ explicit: harness, env, clientHint })

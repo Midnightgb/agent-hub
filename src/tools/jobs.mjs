@@ -354,7 +354,46 @@ export async function jobReplyTool({
   return { jobId: job.jobId, status: job.status, parentJobId: jobId, errorKind: job.errorKind ?? null, turnDepth, warning }
 }
 
-export async function jobWaitTool({ jobId, timeoutS = 30 }) {
+/**
+ * A job_wait stop condition for one record: terminal, or a remote session
+ * waiting for interaction (P0.1, see jobWaitTool below).
+ */
+function isWaitDone(result) {
+  return TERMINAL_STATUSES.has(result.status) || (result.status === 'running' && isWaitingRemoteState(defaultJulesAdapter, result.remote?.state))
+}
+
+/**
+ * same-tree-fanout (S3): wait on a fan-out of jobs. until:'all' (default)
+ * returns once every job is done; until:'any' returns as soon as one is, so
+ * the caller can read it and wait again on `pending`. `jobs` keeps the
+ * caller's order; done/timedOut follow the single-job job_wait meaning.
+ */
+async function jobWaitManyTool({ jobIds, until = 'all', timeoutS = 30 }) {
+  const boundedTimeoutS = Math.min(Math.max(timeoutS, 1), 60)
+  const deadline = Date.now() + boundedTimeoutS * 1000
+  while (true) {
+    const results = jobIds.map((id) => readResult(id))
+    const completed = results.filter(isWaitDone).map((r) => r.jobId)
+    const pending = results.filter((r) => !isWaitDone(r)).map((r) => r.jobId)
+    const satisfied = until === 'any' ? completed.length > 0 : pending.length === 0
+    const timedOut = !satisfied && Date.now() >= deadline
+    if (satisfied || timedOut) {
+      const jobs = results.map((r) => {
+        const waiting = r.status === 'running' && isWaitingRemoteState(defaultJulesAdapter, r.remote?.state)
+        return { ...jobStatusView(r), done: isWaitDone(r), waiting, ...(waiting ? computeAttention({ state: r.remote.state, record: r }) : {}) }
+      })
+      return { jobs, completed, pending, done: satisfied, timedOut }
+    }
+    await new Promise((r) => setTimeout(r, 300))
+  }
+}
+
+export async function jobWaitTool({ jobId, jobIds, until, timeoutS = 30 }) {
+  const many = Array.isArray(jobIds)
+  if ((jobId != null) === many || (many && jobIds.length === 0)) {
+    throw new Error('job_wait takes exactly one of jobId or jobIds (a non-empty array)')
+  }
+  if (many) return jobWaitManyTool({ jobIds, until, timeoutS })
   const boundedTimeoutS = Math.min(Math.max(timeoutS, 1), 60)
   const deadline = Date.now() + boundedTimeoutS * 1000
   let result = readResult(jobId)

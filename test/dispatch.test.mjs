@@ -414,6 +414,41 @@ test('same-tree-fanout S2: dispatch forwards isolation to startJobFn, and omits 
   assert.deepEqual(received, ['scratch', '<absent>'])
 })
 
+test('same-tree-fanout S4: a label makes the dispatchKey distinct; no label keeps the legacy hash', async () => {
+  const crypto = await import('node:crypto')
+  const legacy = crypto.createHash('sha256').update('review this/tmp/repoadversarial-review').digest('hex')
+  assert.equal(computeDispatchKey({ task: 'review this', cwd: '/tmp/repo', taskType: 'adversarial-review' }), legacy)
+  const a = computeDispatchKey({ task: 'review this', cwd: '/tmp/repo', taskType: 'adversarial-review', label: 'r1' })
+  const b = computeDispatchKey({ task: 'review this', cwd: '/tmp/repo', taskType: 'adversarial-review', label: 'r2' })
+  assert.notEqual(a, legacy)
+  assert.notEqual(a, b)
+})
+
+test('same-tree-fanout S4: dispatches with the same task but different labels start separate jobs; the same label still dedupes', async () => {
+  let starts = 0
+  const mockStartJob = async (args) => {
+    starts += 1
+    return {
+      job: { jobId: `job-label-${starts}`, agent: args.agent, model: args.model, status: 'queued', createdAt: new Date().toISOString(), dispatchKey: args.dispatchKey },
+      done: Promise.resolve(),
+    }
+  }
+  const base = {
+    task: 'label-fanout-task',
+    cwd: '/tmp/test-label',
+    routeFn: async () => ({ primary: { agent: 'copilot', model: 'auto' }, fallbacks: [] }),
+    circuitBreakerOpenFn: () => false,
+    runPreflightFn: async () => ({ status: 'ready' }),
+    startJobFn: mockStartJob,
+  }
+  const r1 = await dispatch({ ...base, label: 'reviewer-1' })
+  const r2 = await dispatch({ ...base, label: 'reviewer-2' })
+  const r1again = await dispatch({ ...base, label: 'reviewer-1' })
+  assert.equal(starts, 2)
+  assert.notEqual(r1.dispatchKey, r2.dispatchKey)
+  assert.equal(r1again.dispatchKey, r1.dispatchKey)
+})
+
 test('reserves write lock when mode is write and passes reservationToken to startJob', async () => {
   let acquireLockCalled = false
   let passedReservationToken = null

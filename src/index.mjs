@@ -32,6 +32,7 @@ import {
   DelegateResponse,
   DispatchResponse,
   JobRecord,
+  JobWaitResponse,
   JobResultResponse,
   VerifyCheckInput,
   MetricsResponse,
@@ -478,12 +479,13 @@ export function buildServer() {
           'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
         ),
         isolation: isolationArg,
+        label: z.string().min(1).optional().describe('Fan-out: a distinct label per call keeps N identical dispatches (e.g. parallel reviewers) from deduplicating into one job. Ignored when dispatchKey is given.'),
       },
       outputSchema: DispatchResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation }, extra) =>
-      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, clientHint: getMcpClientHint() }).then((res) => {
+    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label }, extra) =>
+      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, clientHint: getMcpClientHint() }).then((res) => {
         // C1.2 origin mapping (best-effort, mapping-only): remember which
         // harness session this dispatch came from for a future wake-up bridge.
         recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })
@@ -500,12 +502,19 @@ export function buildServer() {
         'Poll a job until it reaches a terminal state or timeoutS (max 60s) elapses. ' +
         'A remote (Jules) session waiting for interaction (AWAITING_*/PAUSED) also ends the wait immediately: ' +
         'done+waiting:true with attentionRequired, attentionReason and recommendedAction — then act via jules_interact. ' +
-        'waiting≠failure. done+timedOut:true means only the local budget elapsed; the job/session keeps running.',
-      inputSchema: { jobId: jobIdArg, timeoutS: z.number().int().positive().max(60).optional().default(30) },
-      outputSchema: JobRecord,
+        'waiting≠failure. done+timedOut:true means only the local budget elapsed; the job/session keeps running. ' +
+        'Fan-out: pass jobIds instead of jobId to wait on several jobs at once; the reply lists jobs (in your order), ' +
+        'completed and pending. until:"any" returns as soon as one finishes — read it, then wait again on pending.',
+      inputSchema: {
+        jobId: jobIdArg.optional(),
+        jobIds: z.array(z.string().min(1)).min(1).optional().describe('Wait on several jobs (fan-out). Mutually exclusive with jobId.'),
+        until: z.enum(['all', 'any']).optional().default('all').describe('With jobIds: all (default) waits for every job; any returns when the first one finishes.'),
+        timeoutS: z.number().int().positive().max(60).optional().default(30),
+      },
+      outputSchema: JobWaitResponse,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    guard(({ jobId, timeoutS }) => jobWaitTool({ jobId, timeoutS }))
+    guard(({ jobId, jobIds, until, timeoutS }) => jobWaitTool({ jobId, jobIds, until, timeoutS }))
   )
 
   register(
