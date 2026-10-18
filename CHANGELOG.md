@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Read jobs fan out in the caller's own checkout, with no caller-managed
   worktrees. Each adapter declares a `readPolicy`: agy read jobs run in a
-  hub-managed scratch copy (a detached worktree under
-  `AGENT_HUB_HOME/scratch/` carrying uncommitted and untracked files, removed
-  when the job ends). copilot/codex/opencode read jobs run in place with a
+  hub-managed scratch copy (a private `git clone --shared` under
+  `AGENT_HUB_HOME/scratch/` carrying uncommitted and untracked files, with its
+  own refs and config, removed when the job ends). copilot/codex/opencode read jobs run in place with a
   warn-level read guard. New `isolation` param (`auto` | `in-place` |
   `scratch`) on `delegate`/`dispatch`. `job_status`/`job_result` expose
   `isolation`, `readGuard` and `warnings`. `AGENT_HUB_READGUARD=strict`

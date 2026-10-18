@@ -115,7 +115,7 @@ test('S1: AGENT_HUB_READGUARD=strict restores the failing read_mode_violation fo
   const result = jobstore.readResult(job.jobId, env)
   assert.equal(result.status, 'failed')
   assert.equal(result.errorKind, 'read_mode_violation')
-  assert.equal(result.isolation.guard, 'strict')
+  assert.equal('isolation' in result, false, 'a strict in-place run keeps the previous record shape')
 })
 
 test('S1: an adapter that declares no read policy keeps the strict guard (previous behavior)', async () => {
@@ -129,8 +129,7 @@ test('S1: an adapter that declares no read policy keeps the strict guard (previo
   const result = jobstore.readResult(job.jobId)
   assert.equal(result.status, 'failed')
   assert.equal(result.errorKind, 'read_mode_violation')
-  assert.equal(result.isolation.mode, 'in-place')
-  assert.equal(result.isolation.guard, 'strict')
+  assert.equal('isolation' in result, false)
 })
 
 test('S2: a scratch-policy read job sees uncommitted and untracked files, and its writes never reach the caller tree', async () => {
@@ -240,7 +239,7 @@ test('S2: isolation:"in-place" runs a scratch-policy adapter in the caller tree 
   const result = jobstore.readResult(job.jobId)
   assert.equal(result.status, 'failed')
   assert.equal(result.errorKind, 'read_mode_violation')
-  assert.equal(result.isolation.mode, 'in-place')
+  assert.equal('isolation' in result, false)
 })
 
 test('S2: isolation:"scratch" isolates an enforced-read adapter too', async () => {
@@ -340,4 +339,95 @@ test('S2: creating a scratch copy sweeps leftover copies older than a day, keepi
   assert.equal(fs.existsSync(path.join(scratchRoot, 'recent')), true)
   removeScratchCopy({ root: copy.root, dir: copy.dir })
   assert.equal(fs.existsSync(copy.dir), false)
+})
+
+// --- T5 verifier regressions (B1-B3 + repo isolation advisory) ---
+
+test('T5/B1: an untracked symlink in the scratch copy never writes through to the caller tree', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  fs.symlinkSync('a.txt', path.join(repo, 'link'))
+  const { startJob, jobstore } = await freshModules(home)
+  const { job, done } = run(startJob, { cwd: repo, adapter: fakeAdapter(`require('fs').writeFileSync('link','AGENT'); ${respond('"ok"')}`, 'scratch') })
+  await done
+  assert.equal(jobstore.readResult(job.jobId).status, 'succeeded')
+  assert.equal(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'committed')
+  assert.equal(fs.readlinkSync(path.join(repo, 'link')), 'a.txt')
+})
+
+test('T5/B2: a cwd that does not exist in the copy (ignored dir) falls back in place instead of crashing', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  fs.appendFileSync(path.join(repo, '.gitignore'), 'build/\n')
+  fs.mkdirSync(path.join(repo, 'build'))
+  fs.writeFileSync(path.join(repo, 'build', 'x.js'), 'x')
+  const { startJob, jobstore } = await freshModules(home)
+  const { job, done } = run(startJob, { cwd: path.join(repo, 'build'), adapter: fakeAdapter(respond('"ok"'), 'scratch') })
+  await done
+  const result = jobstore.readResult(job.jobId)
+  assert.equal(result.status, 'succeeded', result.error)
+  assert.equal(result.isolation.mode, 'in-place')
+  assert.match(result.isolation.fallbackReason, /does not exist in the scratch copy/)
+})
+
+test('T5/B3: a read job on an adapter without a read policy records no isolation field (previous output)', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  const { startJob, jobstore } = await freshModules(home)
+  const tools = await import('../src/tools/jobs.mjs?t=' + Date.now())
+  const { job, done } = run(startJob, { cwd: repo, adapter: fakeAdapter(respond('"ok"')) })
+  await done
+  assert.equal('isolation' in jobstore.readResult(job.jobId), false)
+  assert.equal('isolation' in tools.jobStatusTool({ jobId: job.jobId }), false)
+  assert.equal('isolation' in tools.jobResultTool({ jobId: job.jobId }), false)
+})
+
+test('T5: git commands an agent runs inside the scratch copy never reach the caller repo (refs, config, worktrees)', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  const refsBefore = git(['for-each-ref', '--format=%(refname) %(objectname)'], repo)
+  const configBefore = fs.readFileSync(path.join(repo, '.git', 'config'), 'utf8')
+  const { startJob, jobstore } = await freshModules(home)
+  const script = [
+    "const { execFileSync: x } = require('child_process')",
+    "require('fs').writeFileSync('agent.txt', 'a')",
+    "x('git', ['checkout', '-q', '-b', 'agent-branch'])",
+    "x('git', ['add', '-A'])",
+    "x('git', ['-c', 'user.email=a@a', '-c', 'user.name=a', 'commit', '-q', '-m', 'agent'])",
+    "x('git', ['config', 'agent.flag', '1'])",
+    respond('"ok"'),
+  ].join('; ')
+  const { job, done } = run(startJob, { cwd: repo, adapter: fakeAdapter(script, 'scratch') })
+  await done
+  assert.equal(jobstore.readResult(job.jobId).status, 'succeeded', jobstore.readResult(job.jobId).error)
+  assert.equal(git(['for-each-ref', '--format=%(refname) %(objectname)'], repo), refsBefore)
+  assert.equal(fs.readFileSync(path.join(repo, '.git', 'config'), 'utf8'), configBefore)
+  assert.equal(fs.existsSync(path.join(repo, '.git', 'worktrees')), false, 'no worktree is ever registered in the caller repo')
+})
+
+test('T5: a scratch copy is removed even when the adapter throws after the copy was made', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  const { startJob } = await freshModules(home)
+  const adapter = { ...fakeAdapter(respond('"ok"'), 'scratch'), buildArgv: () => { throw new Error('boom in buildArgv') } }
+  assert.throws(() => run(startJob, { cwd: repo, adapter }), /boom in buildArgv/)
+  const scratchRoot = path.join(home, 'scratch')
+  assert.deepEqual(fs.existsSync(scratchRoot) ? fs.readdirSync(scratchRoot) : [], [])
+})
+
+test('T5: a text file that is not valid UTF-8 reaches the scratch copy byte for byte', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]) // "café\n" in latin-1
+  fs.writeFileSync(path.join(repo, 'legacy.txt'), Buffer.from('cafe\n'))
+  git(['add', 'legacy.txt'], repo)
+  git(['commit', '-q', '-m', 'legacy'], repo)
+  fs.writeFileSync(path.join(repo, 'legacy.txt'), latin1)
+  const { startJob, jobstore } = await freshModules(home)
+  const script = respond("require('fs').readFileSync('legacy.txt').toString('hex')")
+  const { job, done } = run(startJob, { cwd: repo, adapter: fakeAdapter(script, 'scratch') })
+  await done
+  const result = jobstore.readResult(job.jobId)
+  assert.equal(result.isolation.mode, 'scratch', result.isolation.fallbackReason)
+  assert.equal(fs.readFileSync(jobstore.responsePath(job.jobId), 'utf8'), latin1.toString('hex'))
 })

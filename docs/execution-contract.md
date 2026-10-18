@@ -80,7 +80,8 @@ target state for later slices); file:line refs ground what already exists.
   as `read_mode_violation` (output kept for inspection); with `warn`
   (enforced-read CLIs, or agy in its scratch copy) the change is recorded as
   `readGuard` and a warning. A scratch-policy job (agy) runs in a hub-owned
-  detached worktree and never writes the caller's tree. Non-git cwd =
+  shared clone with its own refs/config; only an absolute-path write into
+  the caller's tree escapes it, and the warn guard reports it. Non-git cwd =
   `unverifiable`, never a violation (`src/jobrunner.mjs` `takeSnapshotFn` /
   `diffSnapshotsFn`, `src/readguard.mjs` `takeSnapshot`). `.env` / `JULES_API_KEY` never reach child
   CLIs (`src/sandbox.mjs` env filtering).

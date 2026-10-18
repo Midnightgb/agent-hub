@@ -176,19 +176,34 @@ jobs in parallel in its own checkout. Each adapter declares a `readPolicy`
 | agy (`--mode plan` writes anyway) | `scratch` | in a hub-managed scratch copy | `warn` on the caller's tree |
 | any adapter without a policy | — | in the caller's tree | `strict` |
 
-**Scratch copy.** The hub creates a detached `git worktree` of the caller's
-repository under `AGENT_HUB_HOME/scratch/<jobId>`, then replays the caller's
-uncommitted state into it: tracked changes (staged and unstaged, one binary
-diff against `HEAD`) and untracked, non-ignored files. Ignored files (`.env`,
-`node_modules`, build output) are not copied. The CLI runs in the same
-subdirectory of the copy as the caller's `cwd`, and the copy is removed when
-the job ends; what the agent wrote there is reported as
-`isolation.discardedPaths` and thrown away. The caller's tree and index are
-only read (`git --no-optional-locks`). If no copy can be made (not a git work
-tree, no commits, more than 2000 untracked files, a failed `git worktree
-add`), the job runs in place with the strict guard and a warning, and
-`isolation.fallbackReason` says why. Copies orphaned by a crashed hub are swept
-after 24 hours.
+**Scratch copy.** The hub makes a `git clone --shared` of the caller's
+repository under `AGENT_HUB_HOME/scratch/<jobId>`, checks out the caller's
+`HEAD` detached (hooks disabled), then replays the caller's uncommitted state
+into it: tracked changes (staged and unstaged as one binary diff against
+`HEAD`, so the copy matches the caller's working tree byte for byte) and
+untracked, non-ignored files (symlinks copied verbatim, so a relative link
+resolves inside the copy). Ignored files (`.env`, `node_modules`, build output)
+and the inside of submodules are not copied. The clone borrows objects
+read-only through alternates but has its own refs, config and index and no
+`origin` remote, and nothing is registered in the caller's repository: git
+commands the agent runs in the copy (commit, branch, config) never reach the
+caller. The CLI runs in the same subdirectory of the copy as the caller's
+`cwd`, and the copy is removed when the job ends; what the agent wrote there is
+reported as `isolation.discardedPaths` and thrown away. The caller's tree and
+index are only read (`git --no-optional-locks`).
+
+What the copy cannot stop: an agent that writes to an **absolute path** inside
+the caller's tree. The warn guard on the caller's tree reports that as
+`readGuard` (it cannot tell it from the caller's own concurrent edits);
+`AGENT_HUB_READGUARD=strict` fails the job instead.
+
+If no usable copy can be made (not a git work tree, no commits, more than 2000
+untracked files, an untracked nested repository, a `cwd` that does not exist in
+the copy such as an ignored directory, a failed clone or patch), the job runs in
+place with the strict guard and a warning, and `isolation.fallbackReason` says
+why. Copies orphaned by a crashed hub are swept after 24 hours. `isolation` is
+recorded only when a run differs from the plain strict in-place behavior
+(scratch copy, warn guard, or fallback).
 
 **Read guard.** Before a read job starts, the hub snapshots the git-visible
 state of `cwd` (`git status --porcelain=v1 -z` plus `HEAD`) and re-snapshots it

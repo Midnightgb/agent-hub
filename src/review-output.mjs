@@ -29,19 +29,24 @@ export function appendReviewInstruction(task) {
   return `${task}\n\n${REVIEW_OUTPUT_INSTRUCTION}`
 }
 
-const FENCE_RE = /```json[^\n]*\n([\s\S]*?)```/g
+const OPEN_FENCE = '```json'
 
 /**
- * Parse the LAST fenced ```json block of `text` as a review. Returns
- * `{ ok: true, review: { summary, findings } }` with optional finding fields
- * normalized (file/line -> null, detail -> ''), or `{ ok: false, error }`.
+ * Parse the LAST fenced ```json block of `text` as a review. The block runs
+ * from the last "```json" opener to the last closing fence after it, so a
+ * finding detail that itself contains a ``` code sample cannot cut it short.
+ * Returns `{ ok: true, review: { summary, findings } }` with optional finding
+ * fields normalized (file/line -> null, detail -> ''), or `{ ok: false, error }`.
  */
 export function parseReviewOutput(text) {
-  const blocks = [...String(text ?? '').matchAll(FENCE_RE)]
-  if (blocks.length === 0) return { ok: false, error: 'no fenced ```json review block in the response' }
+  const source = String(text ?? '')
+  const open = source.lastIndexOf(OPEN_FENCE)
+  const bodyStart = open === -1 ? -1 : source.indexOf('\n', open)
+  const close = bodyStart === -1 ? -1 : source.lastIndexOf('```')
+  if (open === -1 || bodyStart === -1 || close <= bodyStart) return { ok: false, error: 'no fenced ```json review block in the response' }
   let value
   try {
-    value = JSON.parse(blocks[blocks.length - 1][1])
+    value = JSON.parse(source.slice(bodyStart + 1, close))
   } catch (error) {
     return { ok: false, error: `the last \`\`\`json block is not valid JSON: ${error.message}` }
   }

@@ -104,3 +104,10 @@ test('S5: delegate forwards output to startJob', async () => {
   tools.delegateTool({ agent: 'copilot', model: 'auto', task: 't', cwd, output: 'review', startJobFn: (args) => { forwarded = args.output; return { job: { jobId: 'j', status: 'queued' } } } })
   assert.equal(forwarded, 'review')
 })
+
+test('T5: a finding detail that contains a code fence still parses', () => {
+  const review = { summary: 's', findings: [{ severity: 'minor', title: 't', detail: 'use this:\n```js\nfoo()\n```\ninstead' }] }
+  const res = parseReviewOutput('prose\n```json\n' + JSON.stringify(review, null, 2) + '\n```\n')
+  assert.equal(res.ok, true, res.error)
+  assert.match(res.review.findings[0].detail, /```js/)
+})
