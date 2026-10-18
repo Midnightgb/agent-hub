@@ -13,6 +13,8 @@ import { updateJsonLocked, writeJsonAtomic, withJsonLock } from '../fsutil.mjs'
  *        root_execution_id TEXT, attempt INTEGER, remote_state TEXT,
  *        quality_score REAL, verified INTEGER, judge_verdict TEXT, result_json TEXT)
  *   leases(job_id TEXT PK, owner TEXT, expires_at TEXT)
+ *   assignments(id TEXT PK, agent, brief, status, head_job_id, in_flight_job_id, ...)
+ *     — persistent multi-turn task sessions; see src/assignments.mjs
  *
  * The JSON fallback stores everything in a single `storage.json` file under
  * the same stateHome() directory. It's meant for development/testing only —
@@ -49,7 +51,7 @@ function jsonStoragePath(stateHome) {
 }
 
 function defaultJsonStore() {
-  return { workflows: {}, workflow_nodes: {}, jobs: {}, leases: {}, harness_origins: {}, task_handoffs: {}, task_context: [], agent_messages: [], dispatch_reservations: {} }
+  return { workflows: {}, workflow_nodes: {}, jobs: {}, leases: {}, harness_origins: {}, task_handoffs: {}, task_context: [], agent_messages: [], dispatch_reservations: {}, assignments: {} }
 }
 
 function readJsonStore(stateHome) {
@@ -560,6 +562,70 @@ function jsonReleaseDispatchReservation(stateHome, dispatchKey, expectedJobId) {
   return removed
 }
 
+const ASSIGNMENT_COLUMNS = [
+  'id', 'agent', 'model', 'title', 'brief', 'plan_ref', 'cwd', 'mode', 'status',
+  'head_job_id', 'session_id', 'turns', 'tokens_used', 'in_flight_job_id',
+  'rehydrated_at', 'close_verdict', 'close_note', 'created_at', 'updated_at', 'closed_at',
+]
+
+function normalizeAssignmentRow(row) {
+  const out = {}
+  for (const col of ASSIGNMENT_COLUMNS) out[col] = row[col] ?? null
+  out.status = out.status ?? 'active'
+  out.turns = Number(out.turns) || 0
+  out.tokens_used = Number(out.tokens_used) || 0
+  return out
+}
+
+/**
+ * Newest first. `_seq` breaks created_at ties by insertion order so both
+ * backends return the same order for rows created in the same millisecond.
+ */
+function filterAssignmentRows(rows, { status, agent, limit } = {}) {
+  const filtered = rows.filter((r) => (!status || r.status === status) && (!agent || r.agent === agent))
+  const ordered = [...filtered].sort((a, b) => {
+    if (a.created_at !== b.created_at) return a.created_at < b.created_at ? 1 : -1
+    return (b._seq ?? 0) - (a._seq ?? 0)
+  })
+  const sliced = Number.isInteger(limit) && limit > 0 ? ordered.slice(0, limit) : ordered
+  return sliced.map(normalizeAssignmentRow)
+}
+
+function jsonInsertAssignment(stateHome, row) {
+  const store = readJsonStore(stateHome)
+  store.assignments = store.assignments || {}
+  const norm = normalizeAssignmentRow(row)
+  if (store.assignments[norm.id]) throw new Error(`assignment already exists: ${norm.id}`)
+  const seq = Object.keys(store.assignments).length + 1
+  store.assignments[norm.id] = { ...norm, _seq: seq }
+  writeJsonStore(stateHome, store)
+  return norm
+}
+
+function jsonGetAssignment(stateHome, id) {
+  const store = readJsonStore(stateHome)
+  const row = store.assignments?.[id]
+  return row ? normalizeAssignmentRow(row) : null
+}
+
+function jsonListAssignments(stateHome, options) {
+  const store = readJsonStore(stateHome)
+  return filterAssignmentRows(Object.values(store.assignments || {}), options)
+}
+
+function jsonUpdateAssignmentAtomic(stateHome, id, mutator) {
+  const store = readJsonStore(stateHome)
+  const existing = store.assignments?.[id]
+  if (!existing) return { ok: false, reason: 'not_found' }
+  const current = normalizeAssignmentRow(existing)
+  const outcome = mutator(current)
+  if (!outcome?.ok) return outcome
+  const next = normalizeAssignmentRow({ ...current, ...outcome.patch, id })
+  store.assignments[id] = { ...next, _seq: existing._seq }
+  writeJsonStore(stateHome, store)
+  return { ok: true, row: next }
+}
+
 /* ------------------------------------------------------------------ */
 /*  better-sqlite3                                                     */
 /* ------------------------------------------------------------------ */
@@ -649,6 +715,31 @@ CREATE TABLE IF NOT EXISTS dispatch_reservations (
   job_id TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS assignments (
+  id TEXT PRIMARY KEY,
+  agent TEXT NOT NULL,
+  model TEXT,
+  title TEXT,
+  brief TEXT NOT NULL,
+  plan_ref TEXT,
+  cwd TEXT,
+  mode TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  head_job_id TEXT,
+  session_id TEXT,
+  turns INTEGER NOT NULL DEFAULT 0,
+  tokens_used INTEGER NOT NULL DEFAULT 0,
+  in_flight_job_id TEXT,
+  rehydrated_at TEXT,
+  close_verdict TEXT,
+  close_note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignments_status_agent ON assignments (status, agent);
 `
 
 const UPSERT_JOB_SQL = `
@@ -821,6 +912,19 @@ const DELETE_DISPATCH_RESERVATION_SQL = `DELETE FROM dispatch_reservations WHERE
  * null, the same way `=` would fail to.
  */
 const DELETE_DISPATCH_RESERVATION_IF_OWNER_SQL = `DELETE FROM dispatch_reservations WHERE dispatch_key = ? AND job_id IS ?`
+
+const INSERT_ASSIGNMENT_SQL = `
+INSERT INTO assignments (${ASSIGNMENT_COLUMNS.join(', ')})
+VALUES (${ASSIGNMENT_COLUMNS.map((c) => `@${c}`).join(', ')})
+`
+
+const GET_ASSIGNMENT_SQL = `SELECT * FROM assignments WHERE id = ?`
+
+const UPDATE_ASSIGNMENT_SQL = `
+UPDATE assignments SET
+${ASSIGNMENT_COLUMNS.filter((c) => c !== 'id').map((c) => `  ${c} = @${c}`).join(',\n')}
+WHERE id = @id
+`
 
 function sqliteInitDb(stateHome) {
   const dbPath = paths({ AGENT_HUB_HOME: stateHome }).dbFile
@@ -1113,6 +1217,45 @@ function sqliteReleaseDispatchReservation(db, dispatchKey, expectedJobId) {
   }
   const info = db.prepare(DELETE_DISPATCH_RESERVATION_IF_OWNER_SQL).run(dispatchKey, expectedJobId)
   return info.changes > 0
+}
+
+function sqliteInsertAssignment(db, row) {
+  const norm = normalizeAssignmentRow(row)
+  db.prepare(INSERT_ASSIGNMENT_SQL).run(norm)
+  return norm
+}
+
+function sqliteGetAssignment(db, id) {
+  const row = db.prepare(GET_ASSIGNMENT_SQL).get(id)
+  return row ? normalizeAssignmentRow(row) : null
+}
+
+function sqliteListAssignments(db, { status, agent, limit } = {}) {
+  const where = []
+  const params = []
+  if (status) { where.push('status = ?'); params.push(status) }
+  if (agent) { where.push('agent = ?'); params.push(agent) }
+  let sql = 'SELECT * FROM assignments'
+  if (where.length) sql += ` WHERE ${where.join(' AND ')}`
+  sql += ' ORDER BY created_at DESC, rowid DESC'
+  if (Number.isInteger(limit) && limit > 0) { sql += ' LIMIT ?'; params.push(limit) }
+  return db.prepare(sql).all(...params).map(normalizeAssignmentRow)
+}
+
+function sqliteUpdateAssignmentAtomic(db, id, mutator) {
+  // IMMEDIATE takes the write lock before the read, so the guard the mutator
+  // evaluates cannot be invalidated by another process before the write.
+  const run = db.transaction(() => {
+    const existing = db.prepare(GET_ASSIGNMENT_SQL).get(id)
+    if (!existing) return { ok: false, reason: 'not_found' }
+    const current = normalizeAssignmentRow(existing)
+    const outcome = mutator(current)
+    if (!outcome?.ok) return outcome
+    const next = normalizeAssignmentRow({ ...current, ...outcome.patch, id })
+    db.prepare(UPDATE_ASSIGNMENT_SQL).run(next)
+    return { ok: true, row: next }
+  })
+  return run.immediate()
 }
 
 /* ------------------------------------------------------------------ */
@@ -1512,6 +1655,52 @@ export function getAgentMessage(ctx, id) {
   }
   const home = normalizeHome(ctx?.stateHome)
   return jsonGetAgentMessage(home, id)
+}
+
+/**
+ * Assignment rows (snake_case). Domain rules live in src/assignments.mjs; this
+ * layer only persists rows and provides one atomic read-check-write primitive.
+ */
+export function insertAssignment(ctx, row) {
+  if (ctx.backend === 'sqlite') {
+    return sqliteInsertAssignment(ctx.db, row)
+  }
+  const home = normalizeHome(ctx?.stateHome)
+  return mutateJsonStore(home, () => jsonInsertAssignment(home, row))
+}
+
+export function getAssignmentRow(ctx, id) {
+  if (ctx.backend === 'sqlite') {
+    return sqliteGetAssignment(ctx.db, id)
+  }
+  const home = normalizeHome(ctx?.stateHome)
+  return jsonGetAssignment(home, id)
+}
+
+export function listAssignmentRows(ctx, options = {}) {
+  if (ctx.backend === 'sqlite') {
+    return sqliteListAssignments(ctx.db, options)
+  }
+  const home = normalizeHome(ctx?.stateHome)
+  return jsonListAssignments(home, options)
+}
+
+/**
+ * Atomic compare-and-set on one assignment row.
+ *
+ * `mutator(currentRow)` runs inside the backend's critical section (an
+ * IMMEDIATE transaction for SQLite, the JSON store lock otherwise) and returns
+ * either `{ ok: false, ...details }` to refuse without writing, or
+ * `{ ok: true, patch }` to merge `patch` into the row. A missing row yields
+ * `{ ok: false, reason: 'not_found' }` without calling the mutator.
+ * @returns {{ ok: true, row: object } | { ok: false, reason: string }}
+ */
+export function updateAssignmentAtomic(ctx, id, mutator) {
+  if (ctx.backend === 'sqlite') {
+    return sqliteUpdateAssignmentAtomic(ctx.db, id, mutator)
+  }
+  const home = normalizeHome(ctx?.stateHome)
+  return mutateJsonStore(home, () => jsonUpdateAssignmentAtomic(home, id, mutator))
 }
 
 export { getDb, closeDb, resetDbInstances } from './db.mjs'
