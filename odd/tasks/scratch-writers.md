@@ -38,7 +38,7 @@ Out of scope: changing the existing worktree gate, the write allowlist or the pe
 
 | ID | Specs | Route | Status | Evidence |
 |----|-------|-------|--------|----------|
-| T1 | S1-S4 | delegated writer (context backstop: long parent session) | pending | |
+| T1 | S1-S4 | delegated writer (context backstop: long parent session) | done | `080570d` on `feat/scratch-writers-01-apply`; RED 12/15 + 2 dispatch -> GREEN `test/scratch-writers.test.mjs` 15/15; focused 65/65; suite 1761/1761; parent spot check 43/43 |
 | T2 | S5 + MCP params | inline | pending | |
 | T3 | S1-S5 | delegated verifier (high risk: write path, concurrency) | pending | |
 
@@ -49,3 +49,4 @@ Route evidence: T1 goes to a writer under the long-session backstop. The parent 
 - L1 (2026-10-18, user, verbatim): "ya reconecte ,entones seguimos con la siguiente fase o pr primero tu la aceotas y sigues ?" then "si dale" (to: merge phase 1 PRs, reinstall from main, start phase 2).
 - L2 (2026-10-18, user choice, verbatim option): "Copia + aplicar (Recommended)".
 - L3: Design inputs from phase 1. `createScratchCopy` (`src/scratchcopy.mjs`) makes a `git clone --shared` with no origin and hooks disabled, replaying uncommitted and untracked state. The whole-tree read guard cannot attribute changes, which is why writers must not run in place. `src/worktree.mjs` holds the existing gate and per-cwd lock. `src/diffstats.mjs` `computeDiffStats({cwd, baseCommit})`.
+- L4: T1 done (writer). Deviations, accepted: an apply-lock wait over 30 s fails with `errorKind:'locked'` and keeps the patch (stale holders are reclaimed by dead pid or age over 2 min); a failed agent still saves `scope.patch`; extra `scratchWrite` fields `applied`, `unappliedPaths`, `conflictPaths`, `reason`; scope entries match as `:(top,glob)<entry>` (`*` within one level, `**` across levels, a bare dir matches below), `:`-prefixed entries are rejected, and remote agents are rejected; renames count as delete+add. Size ~980 authored lines (a new module plus one test per rule). Open risks for T3: a TOCTOU between `--check` and apply; conflict paths are a best guess when git stderr is unparseable; gitattributes/eol differences untested; an agent history rewind in the copy becomes part of its diff.
