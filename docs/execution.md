@@ -85,6 +85,36 @@ specific client: `generic` (`waitMode: none`), `claude-code` (`attention`), and
     reading service URL and credentials from `~/.local/state/opencode/service.json`
     (`AGENT_HUB_OPENCODE_SERVICE_FILE`). Delivery never throws.
 
+## Task assignments
+
+An assignment keeps one plan task in one agent's native CLI session across
+many turns until a human closes it (`src/tools/assignments.mjs`, store in
+`src/assignments.mjs`). Use it instead of `delegate` + `job_reply` when the
+work will need rework: later turns resume the session, so the agent does not
+re-read the codebase.
+
+1. `task_assign` creates the assignment and starts turn 1 through the
+   `delegate` path.
+2. `task_continue` starts every later turn on the head job's `sessionId`
+   through `job_reply`'s core. One turn runs at a time; a second call while a
+   turn is running is refused with `busy`.
+3. `task_close` records the human verdict (`accepted` or `abandoned`). The
+   assignment becomes `closed` and further turns are refused with `closed`.
+
+Only agy, opencode and codex are assignable. Jules keeps its own remote
+multi-turn session through `jules_interact`.
+
+| Topic | Behavior |
+|---|---|
+| Turn reconciliation | Lazy: `task_status`, `task_continue` and `task_close` fold the in-flight job's record into the assignment (head job, `sessionId`, `turns`, tokens). A failed or canceled turn still advances the head. No background watcher, so it survives a server restart. |
+| Context budget | `contextBudget {contextTokens, contextWindow, fraction, source, warning?}` on `task_continue` and single `task_status`. `contextTokens` is the last turn's input-side tokens (codex `input`; agy/opencode report one total, used as a proxy that can overstate). `contextWindow` comes from the opencode live catalog (`limit.context`, `source: 'catalog'`), otherwise `AGENT_HUB_ASSIGNMENT_DEFAULT_CONTEXT_TOKENS` (default 200000, `source: 'default'`). `warning` appears once `fraction` reaches `AGENT_HUB_ASSIGNMENT_CONTEXT_WARN_FRACTION` (default 0.6, range (0, 1]). Advisory only: it never blocks a turn, and it replaces `job_reply`'s turn-depth nudge inside an assignment. |
+| Rehydration | `task_continue` starts a fresh session (same agent/model/cwd/mode) seeded with the brief, the tail of the last response (at most 8000 characters, with a truncation marker) and the new message when: the head has no `sessionId` (`no_session`); `job_reply` refuses the session with `no_session`/`unsupported` without spawning a job (`session_unusable`); or the caller passes `rehydrate: true` (`requested`). The result carries `rehydrated` and `rehydrationReason`; the old session and its occupancy are dropped. |
+
+Known gap: a resumed run that **fails** because the native session expired is
+not detected as such (no adapter `classifyError` recognizes it), so it does
+not rehydrate automatically. It surfaces as a failed turn; call
+`task_continue` with `rehydrate: true` to recover.
+
 ## Write-mode gate
 
 A `delegate()`/`job_reply()` call with `mode: 'write'` requires `cwd` to be

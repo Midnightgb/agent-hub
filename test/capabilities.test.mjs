@@ -40,6 +40,13 @@ test('capabilitiesFor: copilot auto has sessionResume false', () => {
   assert.equal(caps.largeContext, false)
 })
 
+test('capabilitiesFor: claude has sessionResume false because the hub has no claude CLI adapter to resume a session', () => {
+  const caps = capabilitiesFor('claude', 'sonnet')
+  assert.equal(caps.sessionResume, false)
+  assert.equal(AGENT_CAPABILITIES.claude.sessionResume, false)
+  assert.equal(hasCapabilities(caps, ['sessionResume']), false)
+})
+
 test('web is false for every agent in the AGENT_CAPABILITIES table', () => {
   const knownAgents = ['agy', 'opencode', 'codex', 'copilot', 'claude', 'jules']
   for (const agent of knownAgents) {

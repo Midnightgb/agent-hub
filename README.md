@@ -216,8 +216,10 @@ Claude Code ── the job record and its result
 
 Useful tools to know: `route` (who can do this), `dispatch` (run it with policy
 and idempotency — the default choice), `delegate` (raw escape hatch: one exact
-agent+model, no policy), `job_wait`, `job_result`, and
-`plan_task`/`execute_plan` for multi-step work. The complete surface is in
+agent+model, no policy), `job_wait`, `job_result`,
+`plan_task`/`execute_plan` for multi-step work, and
+`task_assign`/`task_continue`/`task_close` to keep one task in one agent's
+session across rework turns. The complete surface is in
 **[MCP tools](docs/reference/tools.md)**.
 
 ## Common use cases

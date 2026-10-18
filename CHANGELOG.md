@@ -13,9 +13,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   deletion) on History. Measured from `git diff --numstat` against the
   baseline HEAD captured at job start plus untracked files, read-only and
   bounded by timeouts. New `GET /api/jobs/:id/diff-stats` endpoint.
+- Task assignments: `task_assign`, `task_continue`, `task_status` and
+  `task_close` keep one plan task in one agent's native CLI session (agy,
+  opencode, codex) across many turns until a human closes it with
+  `accepted` or `abandoned`. One turn runs at a time (`busy` otherwise), and
+  turn completion is reconciled lazily from the job record, so it survives a
+  restart. Backed by a new SQLite `assignments` table (JSON fallback).
+- Context budget for assignments: `task_continue` and `task_status` report
+  `contextBudget`, the last turn's input-side tokens against the model's
+  context window (opencode live catalog, else
+  `AGENT_HUB_ASSIGNMENT_DEFAULT_CONTEXT_TOKENS`, default 200000), with an
+  advisory warning at `AGENT_HUB_ASSIGNMENT_CONTEXT_WARN_FRACTION` (default
+  0.6). It replaces the turn-depth nudge inside an assignment.
+- Assignment rehydration: when the native session cannot be resumed, or on
+  `rehydrate: true`, `task_continue` starts a fresh session seeded with the
+  brief, the tail of the last response and the new message, and reports
+  `rehydrated`/`rehydrationReason`. An expired session behind a failed resumed
+  run is not yet detected automatically.
 
 ### Fixed
 
+- The `claude` capability row no longer claims `sessionResume`: the hub has no
+  claude CLI adapter (claude tiers are host-only routing hints), so it cannot
+  resume a host-run Claude subagent session. Routing with
+  `requirements: ['sessionResume']` now skips claude candidates.
 - agy jobs whose turn ended while the model was still "waiting" on a command
   agy had auto-detached into the background (marker `terminating N background
   task(s) on exit`) are now reported as `failed` with `errorKind: incomplete`
