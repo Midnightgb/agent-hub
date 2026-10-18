@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Scratch writers: `delegate`/`dispatch` with `mode: 'write'` and a
+  `writeScope` run the agent in a hub-managed scratch copy (no worktree, even
+  from the primary checkout) and apply only its in-scope diff to the caller's
+  working tree. Out-of-scope changes are discarded; a patch that no longer
+  applies ends `apply_conflict` with `runs/<jobId>/scope.patch` kept. New
+  record field `scratchWrite`; new errorKinds `apply_conflict`,
+  `scratch_unavailable`.
 - Read jobs fan out in the caller's own checkout, with no caller-managed
   worktrees. Each adapter declares a `readPolicy`: agy read jobs run in a
   hub-managed scratch copy (a private `git clone --shared` under

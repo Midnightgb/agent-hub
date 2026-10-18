@@ -254,6 +254,7 @@ task's header states it explicitly.
 
 ## Write mode
 
+With a `writeScope`, see "Parallel writes: scoped writers" below. Without one,
 `mode:'write'` requires `cwd` to be a secondary `git worktree add` checkout (or an entry in
 `config.mjs`'s `WRITE_ALLOWLIST`, empty by default) — the hub refuses writes into the primary
 checkout (`errorKind:'worktree_denied'`) and serializes writers per cwd with a lock file
@@ -335,7 +336,24 @@ Claude Code subagents:
 - **Writes are different**: a write job still needs a secondary worktree (next section). Keep
   implementation either in your own session or in one write delegate per worktree.
 
-## Parallel writes: one worktree per block, serialize within it
+## Parallel writes: scoped writers in your checkout
+
+The default way to parallelize writes is a **scoped writer**: `delegate`/`dispatch` with
+`mode:'write'` and a `writeScope` (repo-relative globs such as `['src/features/people/**']`).
+- **No worktree:** the writer runs in a hub-managed scratch copy, even from your primary
+  checkout, and when it succeeds the hub applies to your working tree only its changes inside the
+  scope (`scratchWrite.appliedPaths`). Everything else it touched is discarded
+  (`scratchWrite.discardedPaths`).
+- **Same lifecycle as subagents:** launch several writers with disjoint scopes in one turn, keep
+  editing other files yourself, wait with `job_wait({jobIds})`, then review the applied diff with
+  `git diff`. You still own git: nothing is staged or committed for you.
+- **Conflicts:** if a writer and you (or another writer) changed the same lines, nothing is
+  applied. The job ends `apply_conflict` and `scratchWrite.patchPath` points to `scope.patch`;
+  apply it by hand after resolving, or re-run the writer.
+- **Make the scope the task boundary:** a scope narrower than the work silently drops the rest,
+  so check `discardedPaths` after every writer.
+
+## Parallel writes without a scope: one worktree per block, serialize within it
 
 The hub's write lock (`errorKind:'locked'`) only serializes jobs targeting the exact same `cwd` —
 it has no idea whether two *different* worktrees touch overlapping files. Observed pattern for
@@ -375,6 +393,8 @@ before you ever called `delegate` shows up in `skipped` instead (see loop step 2
 | `crash` | no valid result envelope / unexpected exit | not retriable without changing the task |
 | `read_mode_violation` | a `read`-mode job with the strict guard saw its git-visible tree change during the turn: an adapter without a read policy, `isolation:'in-place'` on agy, a scratch-copy fallback, or `AGENT_HUB_READGUARD=strict` | the turn (or someone else) edited files despite read mode; check `git status`, then re-run with the default `isolation:'auto'` (agy goes to a scratch copy) |
 | `orphaned` | job's process was gone when the hub restarted | dead; re-delegate |
+| `apply_conflict` | a scoped writer succeeded but its in-scope patch no longer applies to your tree (you or another writer changed the same lines) | nothing was applied; resolve with `git apply` on `scratchWrite.patchPath` (`scope.patch`) or re-run the writer on the current tree |
+| `scratch_unavailable` | a scoped writer could not get a scratch copy (not a git repo, no commits, too many untracked files, ignored cwd, ...) | the error names why; fix that or fall back to a writer in a secondary worktree without `writeScope` |
 | `auth` | CLI not authenticated | not retriable; needs a human to log in |
 | `not_terminal` | `job_reply` called on a job that has not finished yet | wait for the parent job to reach a terminal status first |
 | `no_session` | `job_reply` called on a job with no recorded `sessionId` | that job never produced a resumable conversation; re-`delegate` instead |
