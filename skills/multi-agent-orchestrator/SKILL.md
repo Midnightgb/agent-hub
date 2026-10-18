@@ -352,6 +352,9 @@ The default way to parallelize writes is a **scoped writer**: `delegate`/`dispat
   apply it by hand after resolving, or re-run the writer.
 - **Make the scope the task boundary:** a scope narrower than the work silently drops the rest,
   so check `discardedPaths` after every writer.
+- **Tell writers never to `git reset`, `git checkout -- <path>` or `git stash`:** the copy
+  starts with your uncommitted changes, so a rewind inside it becomes a diff that reverts them
+  within the scope, and the hub applies that revert to your tree.
 
 ## Parallel writes without a scope: one worktree per block, serialize within it
 
