@@ -25,6 +25,7 @@ const VALID_KINDS = new Set([
   'proposal.decided',
   'learning.proposed',
   'learning.decided',
+  'learning.probed',
   'harness.wake',
   'workflow.completed',
 ])

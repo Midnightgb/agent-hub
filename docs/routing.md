@@ -188,3 +188,32 @@ already has it. Text is sanitized on write and again on every read (control
 characters, backticks and `<hub-learnings>` tags stripped, whitespace
 collapsed) before it can reach another model's prompt.
 
+
+### Probing a pending learning
+
+`learning_probe({learningId, task?, cwd?, agent?, model?, taskType?, output?})`
+gathers evidence before you decide. It runs the same read task twice, in
+parallel, with the same agent, model and cwd. The **control** job gets the
+normal approved selection. The **treatment** job gets that selection plus the
+probed learning, and only that job does. Agent, model and taskType default to the
+learning's scope; task and cwd default to the job named by its `sourceJobId`.
+Anything still missing is an error raised before any job starts. Only `pending`
+learnings can be probed, read mode only.
+
+`learning_probe_result({probeId})` never waits. While either job runs it
+returns `done:false` with both statuses. Once both are terminal it compares
+the arms: status, errorKind, durationMs, responseChars and, with
+`output:'review'`, findings by severity. It adds a `verdictHint` from fixed
+rules:
+
+1. Exactly one arm succeeded: that arm is better.
+2. Neither succeeded: `inconclusive`.
+3. Both succeeded and both have review findings: fewer blocker+major wins.
+4. Otherwise the faster arm wins when the slower took over 1.5x as long and
+   over 30 s longer.
+5. Otherwise `no_difference`.
+
+The comparison is stored once on the learning as `probes[]` in
+`learnings.json` and a `learning.probed` event is recorded. The dashboard
+learnings API returns `probes` with each learning. A probe never changes the
+learning's status: the hint is evidence for the human who approves it.

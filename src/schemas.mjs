@@ -41,6 +41,7 @@ export const EVENT_KINDS = [
   'proposal.decided',
   'learning.proposed',
   'learning.decided',
+  'learning.probed',
   'harness.wake',
   'workflow.completed',
 ]
@@ -601,6 +602,23 @@ export const ProposalsResponse = z
 
 export const LearningStatus = z.enum(['pending', 'approved', 'rejected'])
 
+/** One contrastive probe of a pending learning (src/learning-probes.mjs); comparison is null until both jobs end. */
+export const LearningProbe = z
+  .object({
+    probeId: z.string(),
+    controlJobId: z.string(),
+    treatmentJobId: z.string(),
+    createdAt: z.string(),
+    comparison: z
+      .object({
+        verdictHint: z.enum(['treatment_better', 'control_better', 'no_difference', 'inconclusive']),
+        reason: z.string().optional(),
+      })
+      .passthrough()
+      .nullable(),
+  })
+  .passthrough()
+
 export const Learning = z
   .object({
     id: z.string(),
@@ -613,6 +631,8 @@ export const Learning = z
     sourceJobId: z.string().nullable(),
     createdAt: z.string(),
     decidedAt: z.string().nullable(),
+    // learning-probes: contrastive evidence; absent on learnings never probed.
+    probes: z.array(LearningProbe).optional(),
   })
   .passthrough()
 

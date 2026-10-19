@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Learning probes: `learning_probe` runs the same read task as a control job
+  (approved learnings) and a treatment job (plus one pending learning) in
+  parallel; `learning_probe_result` compares them (status, errorKind,
+  duration, response size, review findings) with a deterministic
+  `verdictHint` and stores it once on the learning as `probes[]`, which the
+  dashboard learnings API returns. Probing never changes a learning's status.
 - Scratch writers: `delegate`/`dispatch` with `mode: 'write'` and a
   `writeScope` run the agent in a hub-managed scratch copy (no worktree, even
   from the primary checkout) and apply only its in-scope diff to the caller's

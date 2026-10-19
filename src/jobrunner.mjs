@@ -202,6 +202,11 @@ export function startJob({
   writeScope = null,
   recordScratchBaseFn = defaultRecordScratchBase,
   finalizeScratchWriteFn = defaultFinalizeScratchWrite,
+  // learning-probes (S1, S3): internal, never exposed on delegate/dispatch.
+  // The treatment arm of a learning probe (src/learning-probes.mjs) passes its
+  // pending learning here; it is appended after the normal approved selection
+  // for THIS job only. Every other job leaves it null and is unchanged.
+  extraLearnings = null,
 }) {
   assertIsolation(isolation)
   assertOutput(output)
@@ -220,6 +225,10 @@ export function startJob({
   // record exists (previously adapterFor ran after createJob/the write gate;
   // no existing test pinned that ordering).
   const adapter = adapterFor(agent)
+  const probedLearnings = Array.isArray(extraLearnings) ? extraLearnings : []
+  if (probedLearnings.length > 0 && (adapter.remote || sessionId || (turnDepth ?? 0) !== 0)) {
+    throw new Error('extraLearnings only applies to a root turn of a local agent')
+  }
   if (adapter.remote && scratchWriter) {
     throw new Error(`writeScope is not supported for remote agent "${agent}": it never runs in a local checkout`)
   }
@@ -260,7 +269,8 @@ export function startJob({
   let learningIds = []
   if (isRootTurn) {
     const selected = selectLearningsFn({ agent, model, taskType, env })
-    const augmented = augmentTaskFn(task, selected)
+    const extra = probedLearnings.filter((l) => !selected.some((s) => s.id === l.id))
+    const augmented = augmentTaskFn(task, extra.length > 0 ? [...selected, ...extra] : selected)
     effectiveTask = augmented.task
     learningIds = Array.isArray(augmented.learningIds) ? augmented.learningIds : []
   }

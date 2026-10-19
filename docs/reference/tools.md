@@ -36,6 +36,8 @@
 | `jules_sessions` | `{limit?, state?, account?}` | Lists sessions directly from the Jules API, newest first, with local `jobId` linkage when present. Recovery path when local records are missing. |
 | `jules_supervise` | `{jobId?, sessionId?, autoApprovePlan? (=true), autoResolveFeedback?, maxAutoReplies? (=2), maxSafeContinues? (=3), pauseAfterAmbiguity?, timeoutS?, pollIntervalS?}` | Supervised autonomy loop: acquires watcher lease, continuously observes, auto-approves plans, and auto-replies to unambiguous feedback under strict mechanical allowlists. |
 | `learning_propose` | `{text, agent?, model?, taskType?, sourceJobId?}` | Records a gotcha as **pending**; a human must approve it in the dashboard before it is injected into a matching prompt. Returns `{learning, note}`. |
+| `learning_probe` | `{learningId, task?, cwd?, agent?, model?, taskType?, output?}` | Starts two read jobs in parallel on a **pending** learning: a control (approved learnings) and a treatment (plus this learning). Defaults come from the learning's scope and its `sourceJobId` job. Never changes the status. Returns `{probeId, controlJobId, treatmentJobId}`. |
+| `learning_probe_result` | `{probeId}` | Non-blocking. `done:false` with both statuses while a job runs; then `done:true` with `comparison` (per arm: status, errorKind, durationMs, responseChars, review findings) and a `verdictHint`, stored once on the learning's `probes[]`. See [routing](../routing.md#probing-a-pending-learning). |
 
 Every tool also declares a zod `outputSchema` and returns the same payload as
 `structuredContent` for clients that want typed output (the text content stays
