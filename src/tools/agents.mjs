@@ -6,6 +6,8 @@ import { effectiveTier } from '../catalog.mjs'
 import { runCommand } from '../process.mjs'
 import { fetchUsage } from '../quota/codexbar.mjs'
 import { quotaFor, getProvider } from '../quota/mapping.mjs'
+import { agyBrowserStatus, agyBrowserAvailable } from '../providers/agy-mcp.mjs'
+import { getAgysMode } from '../providers/agys.mjs'
 
 /**
  * The default set of agent+model pairs agents_status checks: every distinct
@@ -46,6 +48,10 @@ export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), e
   // 'cached' mode never awaits the network; refresh:true only starts a
   // background refresh instead of blocking this call on a cold CodexBar.
   const usageByProvider = await fetchUsage({ providers: [...providers], refresh, env, mode: 'cached' })
+  // Plain file reads (no agys/agy spawn), computed once for every agy row.
+  const agyBrowser = pairs.some((p) => p.agent === 'agy')
+    ? { available: agyBrowserAvailable(getAgysMode(env), env), ...agyBrowserStatus(env) }
+    : null
 
   return results.map((r) => {
     const { tier, tierSource, catalogCheckedAt } = effectiveTier({ agent: r.agent, model: r.model, discovery, registry: MODEL_REGISTRY })
@@ -71,6 +77,7 @@ export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), e
       tier,
       tierSource,
       catalogCheckedAt,
+      ...(r.agent === 'agy' && agyBrowser ? { browser: agyBrowser } : {}),
     }
   })
 }

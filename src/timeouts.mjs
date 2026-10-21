@@ -1,4 +1,4 @@
-import { resolveTimeoutS, ADAPTIVE_TIMEOUT, METRICS_MIN_SAMPLES } from './config.mjs'
+import { resolveTimeoutS, ADAPTIVE_TIMEOUT, METRICS_MIN_SAMPLES, TASK_TYPE_TIMEOUTS_S } from './config.mjs'
 import { metricsFor } from './metrics.mjs'
 
 /**
@@ -35,7 +35,7 @@ export function resolveEffectiveTimeoutS({
     return { timeoutS: explicit, source: 'explicit', p95Ms: null, samples: 0 }
   }
 
-  const base = resolveTimeoutS(agent, model)
+  const base = Math.max(resolveTimeoutS(agent, model), TASK_TYPE_TIMEOUTS_S[taskType] ?? 0)
 
   let row = null
   try {

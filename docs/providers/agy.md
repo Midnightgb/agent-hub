@@ -171,3 +171,50 @@ dispatch({ task: '...', cwd: '...', taskType: 'recon', profile: 'work' })
   account stays fixed. A 429 on a pinned job still fails with quota, and
   exhaustion is still recorded for that account.
 
+
+## Browser / UI testing (`ui-test`)
+
+agy has no built-in browser in headless `-p` mode, so a UI check delegated to it
+answers `NO_BROWSER` unless agy has a browser MCP server. agys runs every
+profile with its own `HOME`, so each profile reads its own
+`~/.agys/profiles/<name>/.gemini/config/mcp_config.json`, separate from the base
+`~/.gemini/config/mcp_config.json`.
+
+1. Add Playwright MCP to the base agy config:
+
+   ```bash
+   agy mcp add playwright npx -y @playwright/mcp@0.0.83 --headless --isolated \
+     --executable-path <path-to-chromium>
+   ```
+
+2. Copy it into every agys profile:
+
+   ```bash
+   agent-hub agys sync-mcp --dry-run   # print what would change
+   agent-hub agys sync-mcp             # write it
+   ```
+
+   Base servers are merged into each profile config: a same-named profile
+   server is replaced by the base one, profile-only servers and other keys are
+   kept, and each changed file is copied to `mcp_config.json.bak` first. There
+   is no `--apply`: the command writes unless `--dry-run` is given.
+
+3. Check `agents_status`: every agy row carries
+   `browser: { available, base, profiles: { <name>: true|false } }`.
+   `available` is the `browser` capability for the current agys mode (`off`:
+   base config; pinned profile: that profile; `auto`: any profile).
+
+4. Dispatch with `taskType: 'ui-test'` (read mode, agy
+   `gemini-3.8-flash-high`, fallback agy `claude-sonnet-4-6`, default timeout
+   at least 1800 s). The page must already be reachable: the agy guard tells the
+   job to use MCP browser tools and not to start a dev server.
+
+A config counts as having a browser when an enabled server (no
+`disabled: true`) is named `playwright` or references `@playwright/mcp` in its
+command or args; a missing, empty or invalid file has no servers.
+`route({ requirements: ['browser'] })` and `dispatch({ requirements: ['browser'] })`
+skip candidates without it (`missing_capabilities:browser`), and `ui-test` adds
+the requirement on its own. In `auto` mode, profile selection for such a job
+only considers profiles with a browser server when at least one has one. A job
+that still lands on a config without one (for example a per-call `profile` pin)
+runs anyway and records a warning on the job.

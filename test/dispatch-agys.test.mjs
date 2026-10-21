@@ -570,3 +570,39 @@ test('createExecutionHandle returns profile from job or null when absent', () =>
   const handleNoJob = createExecutionHandle()
   assert.equal(handleNoJob.profile, null)
 })
+
+test('a browser requirement reaches route, agy profile resolution and startJob (ui-test implies it)', async () => {
+  const { env, cleanup } = makeTempHome()
+  try {
+    const routeCalls = []
+    const resolveCalls = []
+    const started = []
+    const common = {
+      cwd: '/tmp/test-agy-browser',
+      env,
+      startJobFn: async (args) => {
+        started.push(args)
+        return { job: { jobId: `j-browser-${started.length}`, status: 'queued' }, done: Promise.resolve() }
+      },
+      resolveProfileFn: async (args) => {
+        resolveCalls.push(args)
+        return { profile: 'work', status: 'selected' }
+      },
+      ...fakeRoute({ agent: 'agy', model: 'gemini-3.8-flash-high' }),
+    }
+    const routeFn = async (args) => {
+      routeCalls.push(args)
+      return { primary: { agent: 'agy', model: 'gemini-3.8-flash-high' }, fallbacks: [] }
+    }
+
+    await dispatch({ ...common, routeFn, task: 'explicit', taskType: 'recon', requirements: ['browser'] })
+    await dispatch({ ...common, routeFn, task: 'implied', taskType: 'ui-test' })
+    await dispatch({ ...common, routeFn, task: 'none', taskType: 'recon' })
+
+    assert.deepEqual(routeCalls.map((c) => c.requirements), [['browser'], undefined, undefined])
+    assert.deepEqual(resolveCalls.map((c) => c.requireBrowser), [true, true, undefined])
+    assert.deepEqual(started.map((s) => s.requireBrowser), [true, true, undefined])
+  } finally {
+    cleanup()
+  }
+})

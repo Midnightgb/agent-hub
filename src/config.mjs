@@ -156,6 +156,13 @@ export const KILL_GRACE_S = 30
  */
 export const WRITE_ALLOWLIST = []
 
+/**
+ * Per-taskType floor for the static default timeout (seconds). Browser flows
+ * (navigate, wait, snapshot, click) run many slow tool turns, so a ui-test job
+ * never starts with less than this; an explicit timeoutS still wins.
+ */
+export const TASK_TYPE_TIMEOUTS_S = { 'ui-test': 1800 }
+
 // Real runs of 278s/303s on medium/high were being cut short by the old
 // 90s/180s defaults — agy's own --print-timeout then abandons the turn.
 export const DEFAULT_TIMEOUTS_S = {

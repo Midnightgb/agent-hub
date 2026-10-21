@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Browser capability for agy: a new `browser` capability key, true for agy
+  only when the agy MCP config the job will use (base `~/.gemini` or the agys
+  profile's own) has an enabled Playwright MCP server. `agents_status` agy rows
+  report it per profile; `route`/`dispatch` accept `requirements: ['browser']`
+  and skip candidates without it; agys auto selection prefers a profile that
+  has it, and a job that lands on one without it records a warning.
+- `ui-test` task type: read mode, agy `gemini-3.8-flash-high` with agy
+  `claude-sonnet-4-6` as fallback, requires `browser`, default timeout of at
+  least 1800 s; the agy guard tells these jobs to use MCP browser tools.
+- `agent-hub agys sync-mcp [--dry-run]` merges the base agy MCP servers into
+  every agys profile config, keeping profile-only servers and writing a `.bak`
+  of each changed file first.
 - Learning probes: `learning_probe` runs the same read task as a control job
   (approved learnings) and a treatment job (plus one pending learning) in
   parallel; `learning_probe_result` compares them (status, errorKind,

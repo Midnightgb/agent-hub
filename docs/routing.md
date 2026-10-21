@@ -50,6 +50,7 @@ passes availability filtering, plus the rest as fallbacks:
 | `implementation-with-repo-rules` | claude sonnet | — | only Claude Code loads CLAUDE.md + skills + hooks |
 | `architecture` | claude opus | agy claude-opus-4-6-thinking | highest reasoning |
 | `structured-mechanical` | claude haiku | — | cheapest Claude tier |
+| `ui-test` | agy gemini-3.8-flash-high | agy claude-sonnet-4-6 | requires `browser`; drives a Playwright MCP server ([setup](providers/agy.md#browser--ui-testing-ui-test)) |
 
 Codex is only ever a last fallback, for small bounded tasks: its plan quota is
 limited, and every call carries a baseline of about 17,000 input tokens (its own
@@ -118,7 +119,9 @@ const r = await route({
   `opencode -s`, `codex exec resume`; copilot has none), `github` where the CLI
   has built-in GitHub access or works through PRs, `largeContext` from
   `MODEL_REGISTRY` strengths (`1M ctx`). `web` is a reserved key, false
-  everywhere today.
+  everywhere today. `browser` is detected per call for agy only, from the agy
+  MCP config the job would use (an enabled Playwright server); `ui-test`
+  requires it.
 - Scoring is a weighted sum over quality (`qualityScore`, else `verifiedRate`,
   else `successRate`), latency (`p95Ms`) and cost (`costUsdAvg`), normalized
   within the eligible set. A dimension with no data is dropped and its weight

@@ -19,6 +19,7 @@ test('CAPABILITY_KEYS is frozen and contains exact capability list', () => {
     'largeContext',
     'messagingTurnBoundary',
     'messagingMidRun',
+    'browser',
   ])
 })
 

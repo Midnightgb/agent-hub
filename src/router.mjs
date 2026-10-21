@@ -10,6 +10,7 @@ import { computeMetrics } from './metrics.mjs'
 import { rankCandidates, metricKey } from './routing/score.mjs'
 import { codexQuotaDecision } from './routing/codex-gate.mjs'
 import { resolveAgyProfileSync as defaultResolveAgyProfileSync } from './providers/agys.mjs'
+import { requirementsFor } from './capabilities.mjs'
 
 // T4: the ONLY taskTypes where codex appears (always as a last-resort
 // fallback — see DELEGATION_MAP) and therefore the only ones where the
@@ -109,6 +110,16 @@ export const DELEGATION_MAP = {
   'structured-mechanical': {
     why: 'cheapest Claude tier',
     chain: [{ agent: 'claude', model: 'haiku' }],
+  },
+  'ui-test': {
+    why: 'drives a real browser through a Playwright MCP server; flash-low misread pages in live probes',
+    // Requires the 'browser' capability (TASK_TYPE_REQUIREMENTS in
+    // capabilities.mjs): agy only qualifies when its MCP config has an
+    // enabled Playwright server. Default timeout comes from TASK_TYPE_TIMEOUTS_S.
+    chain: [
+      { agent: 'agy', model: 'gemini-3.8-flash-high', mode: 'read' },
+      { agent: 'agy', model: 'claude-sonnet-4-6', mode: 'read' },
+    ],
   },
 }
 
@@ -248,7 +259,8 @@ export async function route({
     candidates: survivorsToRank,
     metrics: metricsLookup,
     preferences,
-    requirements,
+    requirements: requirementsFor(taskType, requirements),
+    env,
   })
 
   const excludedKeys = new Set(excluded.map((e) => `${e.agent}:${e.model}`))

@@ -38,13 +38,15 @@ export function normalizePreferences(preferences = {}) {
   return weights
 }
 
-export function rankCandidates({ candidates = [], metrics = {}, preferences = {}, requirements = [], modelRegistry, minSamples = METRICS_MIN_SAMPLES } = {}) {
+export function rankCandidates({ candidates = [], metrics = {}, preferences = {}, requirements = [], modelRegistry, minSamples = METRICS_MIN_SAMPLES, env = process.env } = {}) {
   const excluded = []
   const eligible = []
+  // browser is the only environment-detected capability; read config files only when it is required.
+  const capsEnv = requirements.includes('browser') ? env : null
 
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]
-    const caps = capabilitiesFor(candidate.agent, candidate.model, { modelRegistry })
+    const caps = capabilitiesFor(candidate.agent, candidate.model, { modelRegistry, env: capsEnv })
     const missing = requirements.filter((req) => !caps[req])
     if (missing.length > 0) {
       excluded.push({ agent: candidate.agent, model: candidate.model, missing })

@@ -16,6 +16,7 @@ import { assertWriteScope } from './scratchwrite.mjs'
 import { cancelJob as defaultCancelJob } from './jobrunner.mjs'
 import { resolveHarness, normalizeWaitMode } from './harness/registry.mjs'
 import { resolveAgyProfile, listAgysProfiles, isAgysAvailable } from './providers/agys.mjs'
+import { requirementsFor } from './capabilities.mjs'
 import { getDb, reserveDispatchKey, releaseDispatchReservation } from './storage/index.mjs'
 
 
@@ -491,6 +492,11 @@ export async function dispatch({
   // mode 'off' (see the pinned-profile branch below, which never consults
   // resolveProfileFn/getAgysMode).
   profile: pinnedProfile = null,
+  // Capability keys every routed candidate must have, on top of the
+  // taskType's own (see TASK_TYPE_REQUIREMENTS); forwarded to routeFn. A
+  // 'browser' requirement also makes agy profile selection prefer profiles
+  // whose MCP config has a Playwright server.
+  requirements = [],
   // D2 (agy-hub-verification): optional hub-run verification checks, same
   // shapes as src/verify.mjs's normalizeVerifyCheck. Validated below before
   // any route/breaker/reservation state changes ("fails fast before
@@ -538,6 +544,7 @@ export async function dispatch({
   assertWriteScope(writeScope, writeScope != null ? 'write' : baseMode)
 
   const profileMemo = new Map()
+  const requireBrowser = requirementsFor(taskType, requirements).includes('browser')
   const resolvedWorkflowId = workflowId ?? restDeps.workflowId ?? restDeps.workflow_id ?? null
   const key = dispatchKey ?? computeDispatchKey({ task, cwd, taskType, workflowStep, workflowId: resolvedWorkflowId, label, writeScope })
   // Harness profile + effective wait contract, resolved once per dispatch.
@@ -733,7 +740,7 @@ export async function dispatch({
       primaryCandidate = restDeps.candidate
       fallbackCandidates = restDeps.fallbacks ? [...restDeps.fallbacks] : []
     } else {
-      const routeResult = await routeFn({ taskType, mode: baseMode, env })
+      const routeResult = await routeFn({ taskType, mode: baseMode, env, ...(requirements?.length ? { requirements } : {}) })
       if (!routeResult || !routeResult.primary) {
         throw new Error(routeResult?.reason || `No available candidate for taskType "${taskType}"`)
       }
@@ -990,7 +997,7 @@ export async function dispatch({
               // reserve:true — this pick is actually about to start a job, so
               // it must reserve a same-tick load slot (T2 burst spreading);
               // see the matching comment in jobrunner.mjs's startJob.
-              const res = await resolveProfileFn({ env, model: candidate.model, reserve: true })
+              const res = await resolveProfileFn({ env, model: candidate.model, reserve: true, ...(requireBrowser ? { requireBrowser } : {}) })
               if (res && typeof res === 'object') {
                 const p = typeof res.profile === 'string' && res.profile.trim() !== '' ? res.profile.trim() : null
                 const s = typeof (res.profileStatus ?? res.status) === 'string' && (res.profileStatus ?? res.status).trim() !== ''
@@ -1036,6 +1043,7 @@ export async function dispatch({
           ...(writeScope != null && stepMode === 'write' ? { writeScope } : {}),
           profile,
           profileStatus,
+          ...(requireBrowser ? { requireBrowser } : {}),
           // Resolved contract always wins over caller extras.
           harness: harnessProfile.id,
           waitMode: effectiveWaitMode,

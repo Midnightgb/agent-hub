@@ -395,7 +395,7 @@ export function buildServer() {
           .array(z.string())
           .optional()
           .describe(
-            'Capability keys a candidate must satisfy: read, write, git, github, web, sessionResume, largeContext. A candidate missing one is skipped with a missing_capabilities reason.'
+            'Capability keys a candidate must satisfy: read, write, git, github, web, sessionResume, largeContext, browser. A candidate missing one is skipped with a missing_capabilities reason. Task types may add their own (ui-test requires browser).'
           ),
         preferences: z
           .object({
@@ -510,12 +510,16 @@ export function buildServer() {
         writeScope: writeScopeArg,
         fanout: z.boolean().optional().describe('Also start the read-only parallelWith reviewer(s) declared on the routed chain step (e.g. adversarial-review: agy + copilot) and return them as parallelJobs; wait on all with job_wait({jobIds}). Default false.'),
         label: z.string().min(1).optional().describe('Fan-out: a distinct label per call keeps N identical dispatches (e.g. parallel reviewers) from deduplicating into one job. Ignored when dispatchKey is given.'),
+        requirements: z
+          .array(z.string())
+          .optional()
+          .describe('Capability keys every routed candidate must have (same keys as route), on top of the taskType\'s own (ui-test requires browser). A candidate missing one is skipped.'),
       },
       outputSchema: DispatchResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope }, extra) =>
-      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, clientHint: getMcpClientHint() }).then((res) => {
+    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, requirements }, extra) =>
+      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, ...(requirements?.length ? { requirements } : {}), clientHint: getMcpClientHint() }).then((res) => {
         // C1.2 origin mapping (best-effort, mapping-only): remember which
         // harness session this dispatch came from for a future wake-up bridge.
         recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })

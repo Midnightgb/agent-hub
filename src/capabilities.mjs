@@ -1,4 +1,6 @@
 import { MODEL_REGISTRY } from './config.mjs'
+import { getAgysMode } from './providers/agys.mjs'
+import { agyBrowserAvailable } from './providers/agy-mcp.mjs'
 
 export const CAPABILITY_KEYS = Object.freeze([
   'read',
@@ -10,6 +12,7 @@ export const CAPABILITY_KEYS = Object.freeze([
   'largeContext',
   'messagingTurnBoundary',
   'messagingMidRun',
+  'browser',
 ])
 
 // sessionResume from adapter argv support (agy --conversation, opencode -s, codex exec resume; copilot none; claude has no hub CLI adapter)
@@ -18,23 +21,29 @@ export const CAPABILITY_KEYS = Object.freeze([
 // web is a RESERVED key with no adapter signal today so false everywhere
 // messagingTurnBoundary: can receive inter-agent notices injected at job_reply turn boundaries (agy, opencode, codex, claude).
 // messagingMidRun: FALSE for every agent today; reserved for when a delegated session is given the hub's MCP server (not wired yet).
+// browser: FALSE in this static table; for agy it is detected per call from the agy MCP config the job will use
+// (an enabled Playwright MCP server, see src/providers/agy-mcp.mjs), only when capabilitiesFor() is given an env.
 export const AGENT_CAPABILITIES = Object.freeze({
   // agy: sessionResume via '--conversation'; local git repo checkout; no github CLI or web signal
-  agy: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false }),
+  agy: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false, browser: false }),
   // opencode: sessionResume via '-s'; local git repo checkout; no github CLI or web signal
-  opencode: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false }),
+  opencode: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false, browser: false }),
   // codex: sessionResume via 'exec resume'; local git repo checkout; no github CLI or web signal
-  codex: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false }),
+  codex: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false, browser: false }),
   // copilot: built-in GitHub access; no session resume support
-  copilot: Object.freeze({ read: true, write: true, git: true, github: true, web: false, sessionResume: false, largeContext: false, messagingTurnBoundary: false, messagingMidRun: false }),
+  copilot: Object.freeze({ read: true, write: true, git: true, github: true, web: false, sessionResume: false, largeContext: false, messagingTurnBoundary: false, messagingMidRun: false, browser: false }),
   // claude: no hub CLI adapter (tiers are host-only routing hints), so the hub cannot resume a host-run
   // Claude subagent session; the host may continue it with its own mechanism. Local git repo checkout; no github CLI or web signal
-  claude: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: false, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false }),
+  claude: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: false, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false, browser: false }),
   // jules: unattended background runner creating GitHub PRs; write/git/github only, not read
-  jules: Object.freeze({ read: false, write: true, git: true, github: true, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: false, messagingMidRun: false }),
+  jules: Object.freeze({ read: false, write: true, git: true, github: true, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: false, messagingMidRun: false, browser: false }),
 })
 
-export function capabilitiesFor(agent, model, { modelRegistry = MODEL_REGISTRY } = {}) {
+/**
+ * `env` opts into the filesystem-backed agy browser detection; without it
+ * browser stays false, so callers that never require it read no config files.
+ */
+export function capabilitiesFor(agent, model, { modelRegistry = MODEL_REGISTRY, env = null } = {}) {
   if (!agent || !AGENT_CAPABILITIES[agent]) {
     return Object.fromEntries(CAPABILITY_KEYS.map((k) => [k, false]))
   }
@@ -43,10 +52,23 @@ export function capabilitiesFor(agent, model, { modelRegistry = MODEL_REGISTRY }
   const strengths = modelRegistry?.[agent]?.[model]?.strengths
   const largeContext = String(strengths ?? '').includes('1M ctx')
 
+  const browser = agent === 'agy' && env != null ? agyBrowserAvailable(getAgysMode(env), env) : base.browser
+
   return {
     ...base,
     largeContext,
+    browser,
   }
+}
+
+/** Capabilities a task type always requires, on top of any the caller passes to route()/dispatch(). */
+export const TASK_TYPE_REQUIREMENTS = Object.freeze({
+  'ui-test': Object.freeze(['browser']),
+})
+
+export function requirementsFor(taskType, extra = []) {
+  const merged = [...(TASK_TYPE_REQUIREMENTS[taskType] ?? []), ...(Array.isArray(extra) ? extra : [])]
+  return [...new Set(merged)]
 }
 
 export function hasCapabilities(caps, required = []) {
