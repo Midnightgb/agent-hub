@@ -182,7 +182,7 @@ files, you paid two quotas for one answer. Delegate when the answer is a *locati
 | `call-chain-trace` | agy `gemini-3.8-flash-high` | opencode `nemotron-3-ultra-free` → Claude `sonnet` | needs multi-hop reasoning, 1M ctx |
 | `research` | opencode `muse-spark-1.3-contributor-free` | opencode `mimo-v2.5-free` → agy `gemini-3.8-flash-medium` | zero cost, 1M ctx |
 | `triage` | opencode `muse-spark-1.3-contributor-free` | copilot `auto` | lowest latency (nemotron-3.5-lightning-free hangs — see opencode.md) |
-| `second-opinion` | agy `gemini-3.1-pro-high` | copilot `auto` | different model lineage than Claude Code |
+| `second-opinion` | agy `gemini-3.8-flash-high` | copilot `auto` | different model lineage than Claude Code |
 | `adversarial-review` | agy `claude-sonnet-4-6` **parallel with** copilot `auto` | agy `claude-opus-4-6-thinking` | dual blind review off the Claude Code quota |
 | `github-context` | copilot `auto` | — | built-in GitHub MCP; no second fallback (see copilot.md) |
 | `mechanical-edit` | agy `gemini-3.8-flash-medium` (write) | opencode `deepseek/deepseek-v4-flash` (write) → copilot `auto` (write) | cheap write-capable; single writer |

@@ -43,7 +43,7 @@ passes availability filtering, plus the rest as fallbacks:
 | `call-chain-trace` | agy gemini-3.8-flash-high | opencode nemotron-3-ultra → claude sonnet | needs multi-hop reasoning, 1M ctx |
 | `research` | opencode muse-spark-1.3 | opencode mimo-v2.5 → agy gemini-3.8-flash-medium | zero cost, 1M ctx |
 | `triage` | opencode muse-spark-1.3 | copilot auto → codex default | lowest latency |
-| `second-opinion` | agy gemini-3.1-pro-high | copilot auto | different model lineage than Claude Code |
+| `second-opinion` | agy gemini-3.8-flash-high | copilot auto | different model lineage than Claude Code |
 | `adversarial-review` | agy claude-sonnet-4-6 (parallel with copilot auto) | agy claude-opus-4-6-thinking | dual blind review off the Claude Code quota |
 | `github-context` | copilot auto | — | built-in GitHub MCP; cheap models keep premium quota |
 | `mechanical-edit` | agy gemini-3.8-flash-medium (write) | opencode deepseek-v4-flash (write) → copilot auto (write) → codex default (write) | cheap write-capable; single writer |
