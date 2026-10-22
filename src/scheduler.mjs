@@ -1,6 +1,7 @@
 import { startRemoteJob as defaultStartRemoteJob } from './cloud/runner.mjs'
 import { readResult as defaultReadResult } from './jobstore.mjs'
 import { computeNextRunAt, dueSchedules, listSchedules, updateSchedule } from './schedules.mjs'
+import { quotaRefreshMs, quotaRoutingMode, refreshQuota } from './routing/quota-gate.mjs'
 
 /**
  * The recurring-task loop. It belongs to the DASHBOARD process, the only
@@ -148,7 +149,9 @@ export async function runScheduleNow(
 
 /**
  * Start the interval loop. Returns { stop() }. The timer is unref()ed so it
- * can never be the reason the process stays alive on its own.
+ * can never be the reason the process stays alive on its own. With
+ * AGENT_HUB_QUOTA_ROUTING=skip, a second timer refreshes quota and clears
+ * exhaustion marks every AGENT_HUB_QUOTA_REFRESH_S (0 disables it).
  */
 export function startScheduler({
   env = process.env,
@@ -159,6 +162,7 @@ export function startScheduler({
   updateScheduleFn = updateSchedule,
   readResultFn = defaultReadResult,
   logFn = defaultLog,
+  refreshQuotaFn = refreshQuota,
 } = {}) {
   const timer = setInterval(() => {
     tick({ env, startJobFn, nowFn, listSchedulesFn, updateScheduleFn, readResultFn, logFn }).catch((error) => {
@@ -167,9 +171,18 @@ export function startScheduler({
   }, intervalMs)
   timer.unref?.()
 
+  const quotaMs = quotaRoutingMode(env) === 'skip' ? quotaRefreshMs(env) : 0
+  const quotaTimer = quotaMs > 0
+    ? setInterval(() => {
+        refreshQuotaFn({ env }).catch((error) => logFn(`[agent-hub] quota refresh failed: ${message(error)}`))
+      }, quotaMs)
+    : null
+  quotaTimer?.unref?.()
+
   return {
     stop() {
       clearInterval(timer)
+      if (quotaTimer) clearInterval(quotaTimer)
     },
   }
 }

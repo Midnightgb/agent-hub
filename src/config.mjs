@@ -53,6 +53,10 @@ export function paths(env = process.env) {
     // propagated the exhaustion yet. Several MCP processes run at once, so
     // this file is read/written through fsutil's locked/atomic helpers.
     agysExhaustionFile: path.join(home, 'agys-exhaustion.json'),
+    // Per (agent, model) — per model group for agy — exhaustion marks for the
+    // opt-in quota routing (AGENT_HUB_QUOTA_ROUTING=skip); see
+    // src/routing/quota-gate.mjs.
+    quotaExhaustionFile: path.join(home, 'quota-exhaustion.json'),
   }
 }
 

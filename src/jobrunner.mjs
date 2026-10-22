@@ -16,6 +16,7 @@ import { assertWriteScope, recordScratchBase as defaultRecordScratchBase, finali
 import { startRemoteJob as defaultStartRemoteJob } from './cloud/runner.mjs'
 import { resolveAgyCommand, profileFromEnv, resolveAgyProfileSync as defaultResolveAgyProfileSync, recordQuotaExhaustion as defaultRecordQuotaExhaustion } from './providers/agys.mjs'
 import { modelGroupFor } from './providers/profiles.mjs'
+import { quotaRoutingMode, recordQuotaMark as defaultRecordQuotaMark } from './routing/quota-gate.mjs'
 import { hasBrowserServer, mcpConfigPath, homeDirOf, profileHasBrowser } from './providers/agy-mcp.mjs'
 import { requirementsFor } from './capabilities.mjs'
 import {
@@ -146,6 +147,7 @@ export function startJob({
   requireBrowser = null,
   resolveAgyProfileSyncFn = defaultResolveAgyProfileSync,
   recordQuotaExhaustionFn = defaultRecordQuotaExhaustion,
+  recordQuotaMarkFn = defaultRecordQuotaMark,
   sessionId,
   parentJobId,
   resolveEffectiveTimeoutSFn = defaultResolveEffectiveTimeoutS,
@@ -561,7 +563,7 @@ export function startJob({
 
   const done = exitPromise
     .then(({ code, timedOut }) =>
-      finishJob({ jobId: job.jobId, agent, model, cwd, title, adapter, mode, env, timedOut, exitCode: code, taskType, snapshot, readGuardLevel: readIsolation?.guard ?? 'strict', scratch, scratchSnapshot, takeSnapshotFn, diffSnapshotsFn, formatViolationFn, harness, waitMode, runCommandFn, profile: effectiveProfile, profileStatus: effectiveProfileStatus, recordQuotaExhaustionFn, diffBase, verify: normalizedVerify, runJobVerificationFn, writeCopy, finalizeScratchWriteFn })
+      finishJob({ jobId: job.jobId, agent, model, cwd, title, adapter, mode, env, timedOut, exitCode: code, taskType, snapshot, readGuardLevel: readIsolation?.guard ?? 'strict', scratch, scratchSnapshot, takeSnapshotFn, diffSnapshotsFn, formatViolationFn, harness, waitMode, runCommandFn, profile: effectiveProfile, profileStatus: effectiveProfileStatus, recordQuotaExhaustionFn, recordQuotaMarkFn, diffBase, verify: normalizedVerify, runJobVerificationFn, writeCopy, finalizeScratchWriteFn })
     )
     .finally(() => {
       stopHeartbeat(job.jobId)
@@ -750,6 +752,7 @@ async function finishJob({
   profile = null,
   profileStatus = null,
   recordQuotaExhaustionFn = defaultRecordQuotaExhaustion,
+  recordQuotaMarkFn = defaultRecordQuotaMark,
   diffBase = null,
   computeDiffStatsFn = defaultComputeDiffStats,
   readHandoffFn = defaultReadHandoff,
@@ -866,6 +869,15 @@ async function finishJob({
         recordQuotaExhaustionFn({ profile: eventProfile, modelGroup: modelGroupFor(model) ?? 'unknown', message: error.message, env })
       } catch {
         // Best-effort: a broken exhaustion record must never fail job finalization.
+      }
+    }
+    // Opt-in quota routing: with no agys account to blame, the whole pair
+    // (model group for agy) is marked until its reset so route() skips it.
+    if (error.kind === 'quota' && !(agent === 'agy' && eventProfile) && quotaRoutingMode(env) === 'skip') {
+      try {
+        recordQuotaMarkFn({ agent, model, message: error.message, env })
+      } catch {
+        // Best-effort, same as the account record above.
       }
     }
     if (error.kind === 'timeout') {

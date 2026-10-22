@@ -9,7 +9,8 @@ import { quotaFor, getProvider } from './quota/mapping.mjs'
 import { computeMetrics } from './metrics.mjs'
 import { rankCandidates, metricKey } from './routing/score.mjs'
 import { codexQuotaDecision } from './routing/codex-gate.mjs'
-import { resolveAgyProfileSync as defaultResolveAgyProfileSync } from './providers/agys.mjs'
+import { quotaRoutingMode, quotaSkipReason } from './routing/quota-gate.mjs'
+import { resolveAgyProfileSync as defaultResolveAgyProfileSync, getAgysMode } from './providers/agys.mjs'
 import { requirementsFor } from './capabilities.mjs'
 
 // T4: the ONLY taskTypes where codex appears (always as a last-resort
@@ -296,7 +297,8 @@ export async function route({
 
   // Quota is informational only for every agent EXCEPT codex, which is
   // deliberately quota-gated below (T4) — see CODEX_GATED_TASK_TYPES and
-  // src/routing/codex-gate.mjs. It must never slow a delegation either way:
+  // src/routing/codex-gate.mjs — unless AGENT_HUB_QUOTA_ROUTING=skip opts
+  // every agent into the gate below. It must never slow a delegation either way:
   // 'cached' mode reads whatever is already in the quota cache and never
   // awaits the network. Providers are computed from every surviving
   // candidate (not just the eventual primary/fallbacks) since the codex
@@ -307,6 +309,44 @@ export async function route({
     if (p) providers.add(p)
   }
   const usageByProvider = await fetchUsage({ providers: [...providers], env, mode: 'cached' })
+
+  const agysEnv = env?.AGENT_HUB_AGYS
+  const isAgysSet = typeof agysEnv === 'string' ? agysEnv.trim() !== '' : Boolean(agysEnv)
+  // Quota exhaustion/headroom is per model group (Gemini vs Claude/GPT), so
+  // each agy candidate's OWN model is threaded through and memoized here —
+  // a chain can carry agy candidates from different groups (e.g. a gemini
+  // primary with a claude fallback), and resolveAgyProfileSync's own cache
+  // key is keyed by group too, so this memo just avoids redundant sync calls
+  // within one route() invocation.
+  const agysProfilesByGroup = new Map()
+  const resolveAgysProfiles = (model) => {
+    const groupKey = model ?? ''
+    if (!agysProfilesByGroup.has(groupKey)) {
+      const resolved = _resolveAgyProfileSync({ env, model })
+      agysProfilesByGroup.set(groupKey, Array.isArray(resolved?.profiles) ? resolved.profiles : [])
+    }
+    return agysProfilesByGroup.get(groupKey)
+  }
+  const agysProfilesFor = (model) => (isAgysSet ? resolveAgysProfiles(model) : null)
+
+  // Opt-in (AGENT_HUB_QUOTA_ROUTING=skip): drop every candidate whose own
+  // quota is used up before it is launched — see src/routing/quota-gate.mjs.
+  // A no-op when the flag is off. agys accounts are read whenever agys is
+  // not off (its default is auto), not only when AGENT_HUB_AGYS is set.
+  if (quotaRoutingMode(env) === 'skip') {
+    const agysInUse = getAgysMode(env).mode !== 'off'
+    candidates = candidates.filter((c) => {
+      const reason = quotaSkipReason({
+        candidate: c,
+        quota: quotaFor(c, usageByProvider),
+        agysProfiles: c.agent === 'agy' && agysInUse ? resolveAgysProfiles(c.model) : null,
+        env,
+        now,
+      })
+      if (reason) skipped.push({ agent: c.agent, model: c.model, reason })
+      return !reason
+    })
+  }
 
   // T4: quota-gated codex routing. codex is a last-resort-only fallback in
   // `triage`/`mechanical-edit`; when its OWN plan quota is nearly exhausted
@@ -340,9 +380,9 @@ export async function route({
   }
 
   if (candidates.length === 0) {
-    // Only reachable when codex was the LAST surviving candidate and the
-    // quota gate just dropped it — mirrors the eligibleSurvivors.length===0
-    // branch above.
+    // Only reachable when a quota gate (opt-in skip, or codex's) just
+    // dropped the last surviving candidate — mirrors the
+    // eligibleSurvivors.length===0 branch above.
     const detail = skipped.map((s) => `${s.agent}:${s.model} (${s.reason})`).join(', ')
     return {
       primary: null,
@@ -357,25 +397,6 @@ export async function route({
 
   const [primary, ...fallbacks] = candidates
   const toAnnotate = [primary, ...fallbacks]
-
-  const agysEnv = env?.AGENT_HUB_AGYS
-  const isAgysSet = typeof agysEnv === 'string' ? agysEnv.trim() !== '' : Boolean(agysEnv)
-  // Quota exhaustion/headroom is per model group (Gemini vs Claude/GPT), so
-  // each agy candidate's OWN model is threaded through and memoized here —
-  // a chain can carry agy candidates from different groups (e.g. a gemini
-  // primary with a claude fallback), and resolveAgyProfileSync's own cache
-  // key is keyed by group too, so this memo just avoids redundant sync calls
-  // within one route() invocation.
-  const agysProfilesByGroup = new Map()
-  const agysProfilesFor = (model) => {
-    if (!isAgysSet) return null
-    const groupKey = model ?? ''
-    if (!agysProfilesByGroup.has(groupKey)) {
-      const resolved = _resolveAgyProfileSync({ env, model })
-      agysProfilesByGroup.set(groupKey, Array.isArray(resolved?.profiles) ? resolved.profiles : [])
-    }
-    return agysProfilesByGroup.get(groupKey)
-  }
 
   // Annotate fresh copies, never DELEGATION_MAP's own candidate objects: `chain`
   // (and therefore `primary`/`fallbacks`) are the same shared, module-level

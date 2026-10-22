@@ -1,6 +1,6 @@
 import child_process from 'node:child_process'
 import { runCommand as defaultRunCommand } from '../process.mjs'
-import { normalizeProfile, selectProfile, profileStateFor, modelGroupFor } from './profiles.mjs'
+import { normalizeProfile, selectProfile, profileStateFor, modelGroupFor, remainingQuotaForModel } from './profiles.mjs'
 import { paths } from '../config.mjs'
 import { writeJsonAtomic, readJsonSafe, updateJsonLocked } from '../fsutil.mjs'
 import { listJobs as defaultListJobs } from '../jobstore.mjs'
@@ -379,7 +379,7 @@ export function recordQuotaExhaustion({ profile, modelGroup, message, env = proc
     file,
     (current) => {
       current[profile] = current[profile] || {}
-      current[profile][modelGroup] = { resetAt, message: typeof message === 'string' ? message : null }
+      current[profile][modelGroup] = { resetAt, recordedAt: now(), message: typeof message === 'string' ? message : null }
       return current
     },
     { defaultValue: {} }
@@ -720,9 +720,12 @@ export function resolveAgyProfileSync({
       }
     }
 
+    // `remaining` (0..1, null when unknown) is the account's headroom for
+    // this model group; the opt-in quota gate in routing/quota-gate.mjs reads it.
     const annotatedProfiles = candidates.map((c) => ({
       name: c.name,
       status: c.state,
+      remaining: remainingQuotaForModel(c.quotaEntry, model),
     }))
 
     let chosen = null

@@ -345,7 +345,9 @@ export function buildServer() {
         'reorders any other agent, and route() is unaffected by it for them. codex is the one deliberate exception (triage/' +
         'mechanical-edit only, where it is always a last-resort fallback): route() drops it entirely below 20% remaining and ' +
         'promotes it to position 2 at/above 50% remaining and on pace — see docs/routing.md. Check it before delegating and tell ' +
-        'the user when a chosen agent is exhausted, with its reset time; the human decides whether to use it anyway. A null quota ' +
+        'the user when a chosen agent is exhausted, with its reset time; the human decides whether to use it anyway. Opt-in: with ' +
+        'AGENT_HUB_QUOTA_ROUTING=skip, route() also skips any pair whose quota is used up or marked exhausted after a quota error ' +
+        '(quotaExhaustedUntil). A null quota ' +
         'carries a reason (CodexBar unreachable, not metered).',
       inputSchema: { refresh: z.boolean().optional().describe('Bypass the 5-minute cache and fetch live.') },
       outputSchema: AgentsQuotaResponseWrapper,

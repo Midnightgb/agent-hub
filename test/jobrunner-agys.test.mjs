@@ -548,3 +548,64 @@ test('a non-quota failure on an agy job with a resolved profile does not call re
   assert.equal(calls, 0)
 })
 
+
+test('quota routing skip: a quota failure with no agys account records a pair exhaustion mark; off records none', async () => {
+  for (const [routing, expected] of [['skip', 1], [undefined, 0]]) {
+    const home = tmpHome()
+    const { startJob } = await freshModules(home)
+    const spawn = () => {
+      const child = fakeChild()
+      process.nextTick(() => child.stdout.emit('data', AGY_QUOTA_FIXTURE))
+      return child
+    }
+    const marks = []
+    const { done } = startJob({
+      agent: 'agy',
+      model: 'claude-sonnet-4-6',
+      task: 'quota mark test',
+      cwd: '/tmp',
+      mode: 'read',
+      adapterFor,
+      spawn,
+      recordQuotaExhaustionFn: () => null,
+      recordQuotaMarkFn: (args) => marks.push(args),
+      env: { AGENT_HUB_HOME: home, ...(routing ? { AGENT_HUB_QUOTA_ROUTING: routing } : {}) },
+    })
+    await done
+    assert.equal(marks.length, expected)
+    if (expected) {
+      assert.equal(marks[0].agent, 'agy')
+      assert.equal(marks[0].model, 'claude-sonnet-4-6')
+      assert.match(marks[0].message, /Individual quota reached/)
+    }
+  }
+})
+
+test('quota routing skip: a quota failure on an agys account marks only that account, never the whole pair', async () => {
+  const home = tmpHome()
+  const { startJob } = await freshModules(home)
+  const spawn = () => {
+    const child = fakeChild()
+    process.nextTick(() => child.stdout.emit('data', AGY_QUOTA_FIXTURE))
+    return child
+  }
+  const marks = []
+  const accounts = []
+  const { done } = startJob({
+    agent: 'agy',
+    model: 'claude-sonnet-4-6',
+    task: 'quota mark test',
+    cwd: '/tmp',
+    mode: 'read',
+    adapterFor,
+    spawn,
+    profile: 'esp',
+    profileStatus: 'selected',
+    recordQuotaExhaustionFn: (args) => accounts.push(args),
+    recordQuotaMarkFn: (args) => marks.push(args),
+    env: { AGENT_HUB_HOME: home, AGENT_HUB_QUOTA_ROUTING: 'skip' },
+  })
+  await done
+  assert.equal(accounts.length, 1)
+  assert.equal(marks.length, 0)
+})

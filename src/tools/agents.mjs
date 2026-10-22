@@ -8,6 +8,7 @@ import { fetchUsage } from '../quota/codexbar.mjs'
 import { quotaFor, getProvider } from '../quota/mapping.mjs'
 import { agyBrowserStatus, agyBrowserAvailable } from '../providers/agy-mcp.mjs'
 import { getAgysMode } from '../providers/agys.mjs'
+import { activeQuotaMark } from '../routing/quota-gate.mjs'
 
 /**
  * The default set of agent+model pairs agents_status checks: every distinct
@@ -31,6 +32,12 @@ export function defaultPairs() {
     }
   }
   return pairs
+}
+
+/** { quotaExhaustedUntil } while the pair has an active quota exhaustion mark, else {}. */
+function exhaustedUntil({ agent, model }, env) {
+  const mark = activeQuotaMark({ agent, model, env })
+  return mark ? { quotaExhaustedUntil: new Date(mark.resetAt).toISOString() } : {}
 }
 
 export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), env = process.env, commandRunner = runCommand } = {}) {
@@ -70,6 +77,7 @@ export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), e
       binPath: discovery[r.agent]?.binPath ?? null,
       cliVersion: discovery[r.agent]?.version ?? null,
       quota: quotaFor({ agent: r.agent, model: r.model }, usageByProvider),
+      ...exhaustedUntil(r, env),
       // Live-catalog pricing tier (src/catalog.mjs): 'catalog' when the last
       // successful discovery row for this agent lists the model (regardless
       // of age), else the MODEL_REGISTRY fallback. catalogCheckedAt is that
@@ -132,5 +140,6 @@ export async function agentsQuotaTool({
     agent: p.agent,
     model: p.model,
     quota: quotaFor(p, usageByProvider),
+    ...exhaustedUntil(p, env),
   }))
 }
