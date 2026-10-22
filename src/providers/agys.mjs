@@ -4,6 +4,17 @@ import { normalizeProfile, selectProfile, profileStateFor, modelGroupFor } from 
 import { paths } from '../config.mjs'
 import { writeJsonAtomic, readJsonSafe, updateJsonLocked } from '../fsutil.mjs'
 import { listJobs as defaultListJobs } from '../jobstore.mjs'
+import { profileHasBrowser } from './agy-mcp.mjs'
+
+/**
+ * A job that needs a browser prefers profiles whose agy MCP config has a
+ * Playwright server. When none has one the list is returned unchanged, so the
+ * job still runs (route() already excludes agy when no config qualifies).
+ */
+export function preferBrowserProfiles(candidates, env, hasBrowserFn = profileHasBrowser) {
+  const withBrowser = candidates.filter((c) => hasBrowserFn(c.name, env))
+  return withBrowser.length > 0 ? withBrowser : candidates
+}
 
 /**
  * agys is an external Go CLI (~/.local/bin/agys) that isolates multi-account profiles
@@ -526,6 +537,8 @@ export async function resolveAgyProfile({
   listJobsFn = defaultListJobs,
   reservations = defaultAgyLoadReservations,
   reserve = false,
+  requireBrowser = false,
+  hasBrowserFn = profileHasBrowser,
 } = {}) {
   try {
     const safeEnv = env || {}
@@ -571,7 +584,8 @@ export async function resolveAgyProfile({
         ? computeAgyLoadContext({ modelGroup, listJobsFn, env: safeEnv, reservations, now })
         : { inFlightByProfile: {}, lastAssignedByProfile: {} }
 
-      const chosen = selectFn({ profiles: candidates, model, inFlightByProfile, lastAssignedByProfile })
+      const pool = requireBrowser ? preferBrowserProfiles(candidates, safeEnv, hasBrowserFn) : candidates
+      const chosen = selectFn({ profiles: pool, model, inFlightByProfile, lastAssignedByProfile })
       if (!chosen) {
         return { profile: null, status: null }
       }
@@ -610,6 +624,8 @@ export function resolveAgyProfileSync({
   listJobsFn = defaultListJobs,
   reservations = defaultAgyLoadReservations,
   reserve = false,
+  requireBrowser = false,
+  hasBrowserFn = profileHasBrowser,
 } = {}) {
   try {
     const safeEnv = env || {}
@@ -714,7 +730,8 @@ export function resolveAgyProfileSync({
       const { inFlightByProfile, lastAssignedByProfile } = modelGroup
         ? computeAgyLoadContext({ modelGroup, listJobsFn, env: safeEnv, reservations, now })
         : { inFlightByProfile: {}, lastAssignedByProfile: {} }
-      chosen = selectProfile({ profiles: candidates, model, inFlightByProfile, lastAssignedByProfile })
+      const pool = requireBrowser ? preferBrowserProfiles(candidates, safeEnv, hasBrowserFn) : candidates
+      chosen = selectProfile({ profiles: pool, model, inFlightByProfile, lastAssignedByProfile })
       if (chosen?.name && reserve && modelGroup) {
         reserveAgyLoadSlot({ profile: chosen.name, modelGroup, reservations, now })
       }

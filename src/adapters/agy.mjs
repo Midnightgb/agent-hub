@@ -25,6 +25,16 @@ export const AGY_GUARD_BLOCK =
   'executed. The hub runs verification itself, in the foreground, after this job ends.'
 
 /**
+ * Appended to AGY_GUARD_BLOCK only for jobs that need a browser (taskType
+ * ui-test or a 'browser' requirement). Same rules: fixed, hub-owned text.
+ * MCP browser tool calls are not shell commands, but "long-running command"
+ * is close enough that the model could refuse them without this sentence.
+ */
+export const AGY_BROWSER_TOOLS_NOTE =
+  'This is a UI test: use the MCP browser tools (for example Playwright navigate, snapshot, click, type) ' +
+  'as needed; they are not shell commands. Do not start a dev server or install anything to reach the page.'
+
+/**
  * Argv only, never a shell — the prompt is one argv element. agy 1.2.1's
  * --mode only accepts 'plan' or 'accept-edits' (not 'read'/'write'), so the
  * hub's own read/write mode is mapped here, not passed through verbatim.
@@ -38,9 +48,10 @@ export const AGY_GUARD_BLOCK =
  * preflight.mjs's pingAgent) -- every real job (delegate/dispatch/workflow),
  * which all reach this function through jobrunner.mjs's startJob, gets it.
  */
-export function buildArgv({ model, prompt, cwd, mode = 'read', sessionId, timeoutS, guard = true }) {
+export function buildArgv({ model, prompt, cwd, mode = 'read', sessionId, timeoutS, guard = true, browserTools = false }) {
   const agyMode = mode === 'write' ? 'accept-edits' : 'plan'
-  const effectivePrompt = guard === false ? prompt : `${AGY_GUARD_BLOCK}\n\n${prompt}`
+  const guardText = browserTools ? `${AGY_GUARD_BLOCK} ${AGY_BROWSER_TOOLS_NOTE}` : AGY_GUARD_BLOCK
+  const effectivePrompt = guard === false ? prompt : `${guardText}\n\n${prompt}`
   const args = ['-p', effectivePrompt, '--output-format', 'stream-json', '--model', model, '--mode', agyMode, '--add-dir', cwd, '--dangerously-skip-permissions']
   if (timeoutS) args.push('--print-timeout', `${timeoutS}s`)
   if (sessionId) args.push('--conversation', sessionId)

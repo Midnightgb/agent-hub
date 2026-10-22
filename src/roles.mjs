@@ -14,7 +14,8 @@ export const KNOWN_TASK_TYPES = Object.freeze([
   'mechanical-edit',
   'implementation-with-repo-rules',
   'architecture',
-  'structured-mechanical'
+  'structured-mechanical',
+  'ui-test'
 ])
 
 const rolesObj = {

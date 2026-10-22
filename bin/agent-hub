@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Dispatch: agent-hub <mcp|hook|dashboard|watch|preflight|selftest> [...args]
+// Dispatch: agent-hub <mcp|hook|dashboard|watch|preflight|agys|selftest> [...args]
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -39,6 +39,11 @@ async function run() {
       await runPreflightCli(rest)
       break
     }
+    case 'agys': {
+      const { runAgysCli } = await import(path.join(SRC, 'agys-cli.mjs'))
+      process.exitCode = await runAgysCli(rest)
+      break
+    }
     case 'selftest': {
       process.argv = [process.argv[0], process.argv[1], '--selftest']
       const { main } = await import(path.join(SRC, 'index.mjs'))
@@ -46,7 +51,7 @@ async function run() {
       break
     }
     default: {
-      console.error(`agent-hub: unknown subcommand "${sub}". Use one of: mcp, hook, dashboard, watch, preflight, selftest.`)
+      console.error(`agent-hub: unknown subcommand "${sub}". Use one of: mcp, hook, dashboard, watch, preflight, agys, selftest.`)
       process.exitCode = 1
     }
   }

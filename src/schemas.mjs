@@ -25,6 +25,7 @@ export const TASK_TYPES = [
   'implementation-with-repo-rules',
   'architecture',
   'structured-mechanical',
+  'ui-test',
 ]
 
 export const EVENT_KINDS = [
@@ -377,6 +378,17 @@ export const AgentStatusRow = z
     tier: nullableString,
     tierSource: z.enum(['catalog', 'registry']).nullable().optional(),
     catalogCheckedAt: nullableString,
+    // agy rows only: whether each agy MCP config (base HOME + every agys
+    // profile) has an enabled Playwright server, and whether the config the
+    // current agys mode would use does (`available`, the 'browser' capability).
+    browser: z
+      .object({
+        available: z.boolean(),
+        base: z.boolean(),
+        profiles: z.record(z.boolean()),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough()
 

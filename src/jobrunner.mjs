@@ -16,6 +16,8 @@ import { assertWriteScope, recordScratchBase as defaultRecordScratchBase, finali
 import { startRemoteJob as defaultStartRemoteJob } from './cloud/runner.mjs'
 import { resolveAgyCommand, profileFromEnv, resolveAgyProfileSync as defaultResolveAgyProfileSync, recordQuotaExhaustion as defaultRecordQuotaExhaustion } from './providers/agys.mjs'
 import { modelGroupFor } from './providers/profiles.mjs'
+import { hasBrowserServer, mcpConfigPath, homeDirOf, profileHasBrowser } from './providers/agy-mcp.mjs'
+import { requirementsFor } from './capabilities.mjs'
 import {
   captureDiffBase as defaultCaptureDiffBase,
   captureRepoInfo as defaultCaptureRepoInfo,
@@ -137,6 +139,11 @@ export function startJob({
   variant,
   profile = null,
   profileStatus = null,
+  // Needs a browser (ui-test, or dispatch requirements ['browser']): agy
+  // profile selection prefers a profile with a Playwright MCP server, agy's
+  // guard allows MCP browser tools, and a warning is recorded when the
+  // config the job runs with has no browser server. Defaults from taskType.
+  requireBrowser = null,
   resolveAgyProfileSyncFn = defaultResolveAgyProfileSync,
   recordQuotaExhaustionFn = defaultRecordQuotaExhaustion,
   sessionId,
@@ -301,6 +308,7 @@ export function startJob({
   // read `.job` immediately.
   let effectiveProfile = null
   let effectiveProfileStatus = null
+  const needsBrowser = requireBrowser ?? requirementsFor(taskType).includes('browser')
   if (adapter.cmd === 'agy') {
     if (profile) {
       effectiveProfile = profile
@@ -309,7 +317,7 @@ export function startJob({
       // reserve:true — this pick is actually about to start a job, so it must
       // reserve a same-tick load slot (T2 burst spreading); an
       // informational-only caller (e.g. router.mjs's annotation) must not.
-      const resolved = resolveAgyProfileSyncFn({ env, model, reserve: true })
+      const resolved = resolveAgyProfileSyncFn({ env, model, reserve: true, ...(needsBrowser ? { requireBrowser: true } : {}) })
       effectiveProfile = resolved?.profile ?? null
       effectiveProfileStatus = effectiveProfile ? (resolved?.status ?? 'selected') : null
     }
@@ -349,6 +357,16 @@ export function startJob({
   // model's default instead of the requested reasoning effort.
   if (variantCheck.warning) {
     updateResult(job.jobId, { warnings: [variantCheck.warning] }, env)
+  }
+  if (adapter.cmd === 'agy' && needsBrowser) {
+    const hasBrowser = effectiveProfile ? profileHasBrowser(effectiveProfile, env) : hasBrowserServer(mcpConfigPath(homeDirOf(env)))
+    if (!hasBrowser) {
+      appendWarning(
+        job.jobId,
+        `browser required but the agy MCP config for ${effectiveProfile ? `profile "${effectiveProfile}"` : 'the base HOME'} has no enabled Playwright server; run \`agent-hub agys sync\``,
+        env
+      )
+    }
   }
 
   // D2: persisted on the record (not just closed over) so cancelJob -- which
@@ -475,7 +493,7 @@ export function startJob({
     }
   }
 
-  const adapterArgs = { model, prompt: effectiveTask, cwd: spawnCwd, mode, title, variant: effectiveVariant, timeoutS: effectiveTimeoutS, sessionId, env }
+  const adapterArgs = { model, prompt: effectiveTask, cwd: spawnCwd, mode, title, variant: effectiveVariant, timeoutS: effectiveTimeoutS, sessionId, env, ...(needsBrowser ? { browserTools: true } : {}) }
   const argv = dropScratchOnThrow(() => adapter.buildArgv(adapterArgs))
   // Only opencode (v2) provides stdinFor: its prompt travels on stdin
   // instead of argv (E3/E4). Every other adapter is unaffected -- the

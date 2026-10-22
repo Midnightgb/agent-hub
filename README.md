@@ -134,6 +134,11 @@ Claude Code
 | Codex CLI | Local | Bounded fallback tasks |
 | Google Jules | Cloud | Long-running remote tasks that end in a pull request |
 
+agy multi-account profiles (agys) each run with their own `HOME`; run
+`agent-hub agys sync` once so every profile shares the base `~/.gemini`
+`GEMINI.md`, user skills and MCP config
+([details](docs/providers/agy.md#share-the-base-agy-setup-with-every-profile-agent-hub-agys-sync)).
+
 Per-agent notes: **[agy](docs/providers/agy.md)** ·
 **[OpenCode](docs/providers/opencode.md)** ·
 **[Copilot](docs/providers/copilot.md)** ·
@@ -230,6 +235,7 @@ session across rework turns. The complete surface is in
 | **Second opinion** | "Review this implementation and identify architectural risks." |
 | **Large artifact analysis** | "Analyze these logs and identify recurring failures." |
 | **Mechanical work** | "Update these 40 files according to the migration pattern." |
+| **UI testing** | `taskType: 'ui-test'` — agy drives a Playwright MCP browser ([setup](docs/providers/agy.md#browser--ui-testing-ui-test)) |
 | **Multi-step workflow** | Research → Implementation → Verification → Review |
 
 ## Workflows
