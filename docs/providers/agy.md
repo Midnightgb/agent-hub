@@ -35,6 +35,38 @@ agys use <name>                     # sets the active default profile
 agys priority set <name> <priority> # sets integer priority (higher = preferred in auto mode)
 ```
 
+### Share the base agy setup with every profile (`agent-hub agys sync`)
+
+Because each profile has its own `HOME`, an agy job run through a profile does
+not see the user's global agy setup in `~/.gemini`: no `GEMINI.md`, no user
+skills and no MCP servers. `agent-hub agys sync` fixes that by symlinking these
+base paths into every `~/.agys/profiles/<name>/.gemini/`:
+
+| Path under `.gemini/` | What it is |
+|---|---|
+| `GEMINI.md` | global instructions |
+| `skills`, `antigravity/skills`, `antigravity-cli/skills` | user skills |
+| `config/mcp_config.json` | MCP servers |
+
+```bash
+agent-hub agys sync --dry-run   # print what would change, write nothing
+agent-hub agys sync             # create the links
+agent-hub agys sync --mcp-merge # link the rest, keep a per-profile MCP config
+```
+
+- A base path that does not exist is skipped.
+- Idempotent: a symlink that already points at the base path is left alone; a
+  symlink pointing elsewhere is replaced.
+- An empty file or directory in the profile is replaced by the link. A
+  non-empty one is first moved to `<path>.bak-<epoch>`.
+- `--mcp-merge` keeps the profile's own `mcp_config.json` and merges the base
+  `mcpServers` into it instead: a same-named profile server is replaced by the
+  base one, profile-only servers and other keys are kept, and a changed file is
+  copied to `mcp_config.json.bak` first. A profile config that is a symlink is
+  turned into a real copy, so the merge never writes to the base file. Use it
+  when profiles need servers the base config should not have.
+- The command writes unless `--dry-run` is given; there is no `--apply`.
+
 ### Modes and precedence
 
 Profile selection operates in one of three modes:
@@ -187,17 +219,17 @@ profile with its own `HOME`, so each profile reads its own
      --executable-path <path-to-chromium>
    ```
 
-2. Copy it into every agys profile:
+2. Make every agys profile see it:
 
    ```bash
-   agent-hub agys sync-mcp --dry-run   # print what would change
-   agent-hub agys sync-mcp             # write it
+   agent-hub agys sync --dry-run   # print what would change
+   agent-hub agys sync             # write it
    ```
 
-   Base servers are merged into each profile config: a same-named profile
-   server is replaced by the base one, profile-only servers and other keys are
-   kept, and each changed file is copied to `mcp_config.json.bak` first. There
-   is no `--apply`: the command writes unless `--dry-run` is given.
+   By default each profile's `mcp_config.json` becomes a symlink to the base
+   one (see [Share the base agy setup](#share-the-base-agy-setup-with-every-profile-agent-hub-agys-sync)),
+   so later `agy mcp add` calls reach every profile without another sync.
+   `--mcp-merge` merges the base servers into a per-profile copy instead.
 
 3. Check `agents_status`: every agy row carries
    `browser: { available, base, profiles: { <name>: true|false } }`.
@@ -211,7 +243,8 @@ profile with its own `HOME`, so each profile reads its own
 
 A config counts as having a browser when an enabled server (no
 `disabled: true`) is named `playwright` or references `@playwright/mcp` in its
-command or args; a missing, empty or invalid file has no servers.
+command or args; a missing, empty or invalid file has no servers. A symlinked
+profile config is read through the link.
 `route({ requirements: ['browser'] })` and `dispatch({ requirements: ['browser'] })`
 skip candidates without it (`missing_capabilities:browser`), and `ui-test` adds
 the requirement on its own. In `auto` mode, profile selection for such a job

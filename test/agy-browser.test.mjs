@@ -9,6 +9,7 @@ import {
   hasBrowserServer,
   mcpConfigPath,
   syncAgysMcpConfigs,
+  syncAgysProfiles,
 } from '../src/providers/agy-mcp.mjs'
 import { capabilitiesFor, requirementsFor } from '../src/capabilities.mjs'
 import { resolveAgyProfile, resetSyncProfileCache } from '../src/providers/agys.mjs'
@@ -119,7 +120,7 @@ test('resolveAgyProfile: requireBrowser prefers a profile with Playwright, other
   assert.equal((await resolveAgyProfile({ ...deps, requireBrowser: true })).profile, 'first')
 })
 
-test('sync-mcp: merges base servers into every profile, keeps profile-only servers and writes a .bak', () => {
+test('mcp merge: merges base servers into every profile, keeps profile-only servers and writes a .bak', () => {
   const home = tmpHome()
   writeConfig(home, { mcpServers: { playwright: PLAYWRIGHT } })
   const workFile = writeConfig(profileHome(home, 'work'), {
@@ -153,20 +154,114 @@ test('sync-mcp: merges base servers into every profile, keeps profile-only serve
   assert.ok(again.profiles.every((p) => !p.changed))
 })
 
-test('agent-hub agys sync-mcp prints per-profile changes and rejects unknown commands', async () => {
-  const home = tmpHome()
+function baseGemini(home) {
+  const dir = path.join(home, '.gemini')
+  fs.mkdirSync(path.join(dir, 'skills', 'one'), { recursive: true })
+  fs.mkdirSync(path.join(dir, 'antigravity', 'skills'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'GEMINI.md'), '# global\n')
   writeConfig(home, { mcpServers: { playwright: PLAYWRIGHT } })
+  return dir
+}
+
+const actionsOf = (report, name) =>
+  Object.fromEntries(report.profiles.find((p) => p.profile === name).links.map((l) => [l.path, l.action]))
+
+test('agys sync: links base paths into every profile and skips missing base paths', () => {
+  const home = tmpHome()
+  const base = baseGemini(home)
+  const work = profileHome(home, 'work')
+  const env = { HOME: home }
+
+  const report = syncAgysProfiles({ env })
+  assert.deepEqual(actionsOf(report, 'work'), {
+    'GEMINI.md': 'linked',
+    skills: 'linked',
+    'antigravity/skills': 'linked',
+    'antigravity-cli/skills': 'skipped',
+    'config/mcp_config.json': 'linked',
+  })
+  assert.equal(fs.readlinkSync(path.join(work, '.gemini', 'skills')), path.join(base, 'skills'))
+  assert.equal(fs.readFileSync(path.join(work, '.gemini', 'GEMINI.md'), 'utf8'), '# global\n')
+  assert.equal(fs.existsSync(path.join(work, '.gemini', 'antigravity-cli')), false)
+  // Browser detection reads through the symlinked config.
+  assert.equal(agyBrowserStatus(env).profiles.work, true)
+  assert.equal(agyBrowserAvailable({ mode: 'profile', profile: 'work' }, env), true)
+
+  const again = syncAgysProfiles({ env })
+  assert.ok(again.profiles[0].links.every((l) => l.action === 'ok' || l.action === 'skipped'))
+  assert.ok(again.profiles[0].links.every((l) => !l.written))
+})
+
+test('agys sync: backs up a non-empty real dir, replaces empty entries and relinks a stale symlink', () => {
+  const home = tmpHome()
+  const base = baseGemini(home)
+  const gemini = path.join(profileHome(home, 'work'), '.gemini')
+  fs.mkdirSync(path.join(gemini, 'skills', 'mine'), { recursive: true })
+  fs.writeFileSync(path.join(gemini, 'skills', 'mine', 'SKILL.md'), 'x')
+  fs.mkdirSync(path.join(gemini, 'antigravity', 'skills'), { recursive: true })
+  writeConfig(path.dirname(gemini), '')
+  fs.symlinkSync(path.join(home, 'elsewhere.md'), path.join(gemini, 'GEMINI.md'))
+
+  const report = syncAgysProfiles({ env: { HOME: home }, now: () => 1_700_000_000_000 })
+  const actions = actionsOf(report, 'work')
+  assert.equal(actions.skills, 'backed-up')
+  assert.equal(actions['antigravity/skills'], 'replaced-empty')
+  assert.equal(actions['config/mcp_config.json'], 'replaced-empty')
+  assert.equal(actions['GEMINI.md'], 'relinked')
+  const backup = path.join(gemini, 'skills.bak-1700000000')
+  assert.equal(fs.readFileSync(path.join(backup, 'mine', 'SKILL.md'), 'utf8'), 'x')
+  for (const rel of ['skills', 'antigravity/skills', 'config/mcp_config.json', 'GEMINI.md']) {
+    assert.equal(fs.readlinkSync(path.join(gemini, rel)), path.join(base, rel))
+  }
+})
+
+test('agys sync --dry-run writes nothing and reports the same actions', () => {
+  const home = tmpHome()
+  baseGemini(home)
+  const gemini = path.join(profileHome(home, 'work'), '.gemini')
+  fs.mkdirSync(path.join(gemini, 'skills', 'mine'), { recursive: true })
+
+  const report = syncAgysProfiles({ env: { HOME: home }, apply: false })
+  assert.equal(actionsOf(report, 'work').skills, 'backed-up')
+  assert.ok(report.profiles[0].links.every((l) => !l.written))
+  assert.deepEqual(fs.readdirSync(gemini), ['skills'])
+  assert.equal(fs.lstatSync(path.join(gemini, 'skills')).isDirectory(), true)
+})
+
+test('agys sync --mcp-merge keeps a per-profile MCP config, materializing a symlinked one', () => {
+  const home = tmpHome()
+  baseGemini(home)
+  const work = profileHome(home, 'work')
+  const env = { HOME: home }
+  syncAgysProfiles({ env })
+  const file = mcpConfigPath(work)
+  assert.equal(fs.lstatSync(file).isSymbolicLink(), true)
+
+  const report = syncAgysProfiles({ env, mcpMerge: true })
+  assert.ok(!report.profiles[0].links.some((l) => l.path === 'config/mcp_config.json'))
+  assert.equal(report.mcp.profiles[0].unlinked, true)
+  assert.equal(fs.lstatSync(file).isSymbolicLink(), false)
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers, { playwright: PLAYWRIGHT })
+  assert.equal(hasBrowserServer(mcpConfigPath(home)), true)
+})
+
+test('agent-hub agys sync prints per-profile actions and rejects unknown commands and options', async () => {
+  const home = tmpHome()
+  baseGemini(home)
   profileHome(home, 'work')
   const lines = []
   const errors = []
   const io = { env: { HOME: home }, log: (l) => lines.push(l), error: (l) => errors.push(l) }
 
-  assert.equal(await runAgysCli(['sync-mcp', '--dry-run'], io), 0)
-  assert.match(lines.at(-1), /work: added playwright \(dry run, not written\)/)
-  assert.equal(await runAgysCli(['sync-mcp'], io), 0)
-  assert.match(lines.at(-1), /work: added playwright \(new file\)/)
-  assert.equal(await runAgysCli(['nope'], io), 1)
-  assert.equal(errors.length, 1)
+  assert.equal(await runAgysCli(['sync', '--dry-run'], io), 0)
+  assert.ok(lines.some((l) => /skills: linked \(dry run, not written\)/.test(l)))
+  assert.equal(await runAgysCli(['sync'], io), 0)
+  assert.ok(lines.some((l) => /GEMINI\.md: linked$/.test(l)))
+  assert.equal(await runAgysCli(['sync', '--mcp-merge'], io), 0)
+  assert.ok(lines.some((l) => /mcp_config\.json: merged, replaced symlink with a copy/.test(l)))
+  assert.equal(await runAgysCli(['sync-mcp'], io), 1)
+  assert.equal(await runAgysCli(['sync', '--apply'], io), 1)
+  assert.equal(errors.length, 2)
 })
 
 test('ui-test jobs: agy guard allows MCP browser tools and the default timeout is raised', () => {

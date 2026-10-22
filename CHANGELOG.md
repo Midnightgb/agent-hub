@@ -17,9 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `ui-test` task type: read mode, agy `gemini-3.8-flash-high` with agy
   `claude-sonnet-4-6` as fallback, requires `browser`, default timeout of at
   least 1800 s; the agy guard tells these jobs to use MCP browser tools.
-- `agent-hub agys sync-mcp [--dry-run]` merges the base agy MCP servers into
-  every agys profile config, keeping profile-only servers and writing a `.bak`
-  of each changed file first.
+- `agent-hub agys sync [--dry-run] [--mcp-merge]` symlinks the base agy setup
+  (`~/.gemini/GEMINI.md`, the user skills dirs `skills`, `antigravity/skills`,
+  `antigravity-cli/skills`, and `config/mcp_config.json`) into every agys
+  profile's `.gemini/`, so hub-dispatched agy jobs see the user's global
+  instructions, skills and MCP servers. Idempotent; missing base paths are
+  skipped, empty profile entries are replaced and non-empty ones are moved to
+  `<path>.bak-<epoch>` first. `--mcp-merge` keeps a per-profile MCP config and
+  merges the base servers into it instead.
 - Learning probes: `learning_probe` runs the same read task as a control job
   (approved learnings) and a treatment job (plus one pending learning) in
   parallel; `learning_probe_result` compares them (status, errorKind,

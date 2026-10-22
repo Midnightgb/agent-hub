@@ -363,7 +363,7 @@ export function startJob({
     if (!hasBrowser) {
       appendWarning(
         job.jobId,
-        `browser required but the agy MCP config for ${effectiveProfile ? `profile "${effectiveProfile}"` : 'the base HOME'} has no enabled Playwright server; run \`agent-hub agys sync-mcp\``,
+        `browser required but the agy MCP config for ${effectiveProfile ? `profile "${effectiveProfile}"` : 'the base HOME'} has no enabled Playwright server; run \`agent-hub agys sync\``,
         env
       )
     }
