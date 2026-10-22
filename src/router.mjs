@@ -65,7 +65,7 @@ export const DELEGATION_MAP = {
   'second-opinion': {
     why: 'different model lineage than Claude Code',
     chain: [
-      { agent: 'agy', model: 'gemini-3.1-pro-high', mode: 'read' },
+      { agent: 'agy', model: 'gemini-3.8-flash-high', mode: 'read' },
       { agent: 'copilot', model: 'auto', mode: 'read' },
     ],
   },
