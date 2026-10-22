@@ -17,6 +17,9 @@
 | `AGENT_HUB_LEASE_TTL_MS` | Lease TTL in milliseconds for write-mode worktree locks (default 120,000 ms / 2 min). |
 | `AGENT_HUB_DISABLE_STARTUP_DISCOVERY` | `1` skips the background discovery pass on MCP startup. Used by tests that boot the real stdio server and must not spawn a real CLI as a side effect. |
 | `AGENT_HUB_CODEXBAR_URL` | Base URL for the local CodexBar quota server (default `http://127.0.0.1:8787`). |
+| `AGENT_HUB_QUOTA_ROUTING` | `skip` makes `route`/`dispatch` skip a pair whose quota is used up or marked exhausted after a quota error (see [routing](../routing.md#opt-in-skip-exhausted-pairs-agent_hub_quota_routingskip)). `off` (default) keeps quota informational. |
+| `AGENT_HUB_QUOTA_MIN_REMAINING` | Remaining fraction (0..1) below which a quota window counts as used up under `skip` (default `0.05`). |
+| `AGENT_HUB_QUOTA_REFRESH_S` | Seconds between the dashboard service's quota refreshes under `skip`, which clear exhaustion marks once quota is back (default `300`, `0` disables). |
 | `AGENT_HUB_CODEX_IGNORE_USER_CONFIG` | `1` passes `--ignore-user-config` to Codex CLI invocations to ignore user-level configuration files. |
 | `AGENT_HUB_SCHEDULER` | `0` disables recurring Jules schedule evaluation in the dashboard service. |
 | `AGENT_HUB_DB_INIT_RETRIES` | Number of retry attempts when initializing the SQLite database under file-lock contention (default 10). |
@@ -38,6 +41,7 @@
 | `schedules.json` | Recurring Jules tasks evaluated by the dashboard service |
 | `sources-cache.json` | Cached GitHub repositories connected to Jules accounts |
 | `quota-cache.json` | Cached CodexBar quota readings (5 min TTL) |
+| `quota-exhaustion.json` | Pair exhaustion marks (per model group for agy) recorded from quota errors under `AGENT_HUB_QUOTA_ROUTING=skip` |
 | `runs/<jobId>/` | `prompt.txt`, `stdout.log`, `response.txt`, `result.json` per job |
 | `runs/<workflowId>/<stepId>/artifacts/` | Step evidence directory: `artifacts.manifest.json`, `verification.json`, `judge.json`, `handoff.json`, and step-declared artifact files |
 | `runs/.locks/` | Per-cwd single-writer locks for write-mode jobs |

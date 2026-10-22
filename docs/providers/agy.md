@@ -203,6 +203,17 @@ dispatch({ task: '...', cwd: '...', taskType: 'recon', profile: 'work' })
   account stays fixed. A 429 on a pinned job still fails with quota, and
   exhaustion is still recorded for that account.
 
+### When every account is exhausted
+
+Account selection only picks among accounts; when all of them are out of quota
+for a model group, the job still runs and fails. With
+`AGENT_HUB_QUOTA_ROUTING=skip`, `route`/`dispatch` instead skip that agy
+candidate (reason `quota`) once every eligible account is `exhausted` or below
+`AGENT_HUB_QUOTA_MIN_REMAINING`, and the next candidate in the chain runs. The
+dashboard service's quota refresh (`AGENT_HUB_QUOTA_REFRESH_S`) re-reads
+`agys quota --json` and clears an account's exhaustion record once it has
+quota again. See [routing](../routing.md#opt-in-skip-exhausted-pairs-agent_hub_quota_routingskip).
+
 
 ## Browser / UI testing (`ui-test`)
 

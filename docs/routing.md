@@ -74,10 +74,12 @@ server (`codexbar serve`, default `http://127.0.0.1:8787`, override with
 rows and on `route()`'s primary and fallbacks, in the `agents_quota` tool, at
 `GET /api/quota`, and in the dashboard's Agents view.
 
-**It never decides anything — with one deliberate exception.** Quota data does
-not choose, skip, reorder or block an agent, and `route()` returns the same
-chain with or without it — a test pins that. An exhausted agent stays in its
-place; the point is that you see it before a job fails, and decide.
+**By default it never decides anything — with one deliberate exception.**
+Quota data does not choose, skip, reorder or block an agent, and `route()`
+returns the same chain with or without it — a test pins that. An exhausted
+agent stays in its place; the point is that you see it before a job fails, and
+decide. Setting `AGENT_HUB_QUOTA_ROUTING=skip` opts into quota-aware routing
+instead (see below).
 
 The exception is **codex**, which only ever appears as a LAST-resort fallback
 in the `triage` and `mechanical-edit` chains because its plan quota is scarce
@@ -87,6 +89,37 @@ is dropped entirely (never even attempted); at or above 50% remaining and "on
 pace" (burn rate not ahead of the elapsed window) it is promoted to position 2
 instead of being saved for last. Every other agent, and codex in every other
 chain, is unaffected — quota still never decides anything for them.
+
+### Opt-in: skip exhausted pairs (`AGENT_HUB_QUOTA_ROUTING=skip`)
+
+With `AGENT_HUB_QUOTA_ROUTING=skip`, `route()` (and therefore `dispatch`)
+drops a chain candidate before launching it when its own quota is used up, so
+the next candidate runs instead of a job that would fail with a 429. It is
+reported in `skipped` with reason `quota`:
+
+- agy with agys accounts: every eligible account (not `unavailable`) is
+  `exhausted` or below `AGENT_HUB_QUOTA_MIN_REMAINING` (default `0.05`) for the
+  model's group (Gemini vs Claude/GPT).
+- any other metered pair, or agy without agys: the lowest remaining CodexBar
+  window is below that threshold.
+- claude tiers are never skipped (they run on the host's own quota).
+
+Unknown quota (no data, pending, stale, unmetered) never skips.
+
+When a job fails with a quota error, the reset is parsed from the error
+("Resets in 78h0m0s", "reset in 150 hours", an ISO timestamp, ...; one hour
+when none is found) and the pair is marked exhausted until then in
+`quota-exhaustion.json` (per model group for agy; a job that ran on an agys
+account marks only that account, in `agys-exhaustion.json`). While a mark is
+active `route()` skips the pair with reason `quota-exhausted-until <iso>`,
+and `agents_status`, `agents_quota` and `GET /api/quota` show it as
+`quotaExhaustedUntil`.
+
+The dashboard service refreshes CodexBar and `agys quota --json` every
+`AGENT_HUB_QUOTA_REFRESH_S` (default 300, `0` disables) and clears marks whose
+reset passed or whose quota is back at or above the threshold. A mark younger
+than one refresh interval is only cleared by its reset, since a quota reading
+can lag a fresh 429.
 
 Each pair maps to the CodexBar windows that actually limit it. agy splits by
 model family: `gemini-*` models read the Gemini windows, while `claude-*` and

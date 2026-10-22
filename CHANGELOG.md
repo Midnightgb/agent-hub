@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Opt-in quota-aware routing (`AGENT_HUB_QUOTA_ROUTING=skip`, default `off`):
+  `route`/`dispatch` skip a pair whose quota is used up (every eligible agys
+  account for agy, the CodexBar windows otherwise; threshold
+  `AGENT_HUB_QUOTA_MIN_REMAINING`, default 0.05) with reason `quota`. A quota
+  error marks the pair exhausted until the reset parsed from the error (one
+  hour when none), skipped as `quota-exhausted-until <iso>` and shown as
+  `quotaExhaustedUntil` in `agents_status`/`agents_quota`/`GET /api/quota`.
+  The dashboard service refreshes quota every `AGENT_HUB_QUOTA_REFRESH_S`
+  (default 300) and clears marks once quota is back. Unknown quota never skips.
 - Browser capability for agy: a new `browser` capability key, true for agy
   only when the agy MCP config the job will use (base `~/.gemini` or the agys
   profile's own) has an enabled Playwright MCP server. `agents_status` agy rows
