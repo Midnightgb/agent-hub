@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import { spawnDetached, runWithTimeout as defaultRunWithTimeout, killProcessGroup, runCommand as defaultRunCommand } from './process.mjs'
 import path from 'node:path'
-import { createJob, updateResult, appendStdout, stdoutPath, responsePath, readResult } from './jobstore.mjs'
+import { createBusybitsEventStream } from './busybits-events.mjs'
+import { createJob, updateResult, appendStdout, appendBusybitsEvents, stdoutPath, responsePath, readResult } from './jobstore.mjs'
 import { appendEvent } from './eventlog.mjs'
 import { adapterFor as defaultAdapterFor } from './adapters/index.mjs'
 import { checkWriteAllowed, acquireWriteLock, releaseWriteLock, heartbeatWriteLock, LEASE_TTL_MS_DEFAULT, adoptWriteLock } from './worktree.mjs'
@@ -535,13 +536,21 @@ export function startJob({
   // own — with a partial/empty result on stdout — when that fires. The extra
   // grace period lets that graceful, partial-output-preserving exit happen
   // before this hub SIGTERM->SIGKILLs the whole process group.
+  const busybitsStream = createBusybitsEventStream(agent, (line) => appendBusybitsEvents(job.jobId, line, env))
   const { exitPromise } = runWithTimeout(child, {
     timeoutMs: (effectiveTimeoutS + KILL_GRACE_S) * 1000,
-    onStdout: (chunk) => appendStdout(job.jobId, chunk, env),
+    onStdout: (chunk) => {
+      appendStdout(job.jobId, chunk, env)
+      busybitsStream?.write(chunk)
+    },
     onStderr: (chunk) => appendStdout(job.jobId, chunk, env),
   })
 
   const done = exitPromise
+    .then((exit) => {
+      busybitsStream?.end()
+      return exit
+    })
     .then(({ code, timedOut }) =>
       finishJob({ jobId: job.jobId, agent, model, cwd, title, adapter, mode, env, timedOut, exitCode: code, taskType, snapshot, readGuardLevel: readIsolation?.guard ?? 'strict', scratch, scratchSnapshot, takeSnapshotFn, diffSnapshotsFn, formatViolationFn, harness, waitMode, runCommandFn, profile: effectiveProfile, profileStatus: effectiveProfileStatus, recordQuotaExhaustionFn, diffBase, verify: normalizedVerify, runJobVerificationFn, writeCopy, finalizeScratchWriteFn })
     )

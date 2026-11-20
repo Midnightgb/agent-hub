@@ -1,0 +1,8 @@
+{"type":"step_start","timestamp":1789138999000,"sessionID":"ses_1","part":{"id":"prt_0","messageID":"msg_1","sessionID":"ses_1","type":"step-start"}}
+{"type":"tool_use","timestamp":1789139000000,"sessionID":"ses_1","part":{"id":"prt_1","callID":"call_read1","messageID":"msg_1","type":"tool","tool":"read","state":{"status":"running","input":{"filePath":"/repo/src/a.js"}}}}
+{"type":"tool_use","timestamp":1789139000500,"sessionID":"ses_1","part":{"id":"prt_1","callID":"call_read1","messageID":"msg_1","type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"/repo/src/a.js"},"output":"..."}}}
+{"type":"tool_use","timestamp":1789139001000,"sessionID":"ses_1","part":{"id":"prt_2","callID":"call_edit1","messageID":"msg_1","type":"tool","tool":"edit","state":{"status":"completed","input":{"filePath":"/repo/src/a.js","oldString":"a","newString":"b"}}}}
+{"type":"tool_use","timestamp":1789139002000,"sessionID":"ses_1","part":{"id":"prt_3","callID":"call_bash1","messageID":"msg_1","type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"npm test"}}}}
+{"type":"tool_use","timestamp":1789139002500,"sessionID":"ses_1","part":{"id":"prt_4","callID":"call_pending","messageID":"msg_1","type":"tool","tool":"grep","state":{"status":"pending","input":{}}}}
+{"type":"text","timestamp":1789139003000,"sessionID":"ses_1","part":{"id":"prt_5","messageID":"msg_1","type":"text","text":"All done","time":{"start":1789139002900,"end":1789139003000}}}
+{"type":"step_finish","timestamp":1789139003100,"sessionID":"ses_1","part":{"id":"prt_6","messageID":"msg_1","type":"step-finish","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}

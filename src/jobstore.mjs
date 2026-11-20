@@ -46,6 +46,11 @@ export function stdoutPath(jobId, env = process.env) {
   return path.join(jobDir(jobId, env), 'stdout.log')
 }
 
+/** Busybits-shaped event mirror (opencode/codex only); see busybits-events.mjs. */
+export function eventsPath(jobId, env = process.env) {
+  return path.join(jobDir(jobId, env), 'events.jsonl')
+}
+
 /** The parsed, human-readable response text — distinct from the raw stdout.log. */
 export function responsePath(jobId, env = process.env) {
   return path.join(jobDir(jobId, env), 'response.txt')
@@ -478,6 +483,10 @@ export function listJobs(env = process.env) {
 
 export function appendStdout(jobId, chunk, env = process.env) {
   fs.appendFileSync(stdoutPath(jobId, env), chunk, 'utf8')
+}
+
+export function appendBusybitsEvents(jobId, chunk, env = process.env) {
+  fs.appendFileSync(eventsPath(jobId, env), chunk, 'utf8')
 }
 
 function isPidAlive(pid) {
