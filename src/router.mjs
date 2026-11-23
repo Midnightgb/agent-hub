@@ -1,4 +1,5 @@
-import { CIRCUIT_BREAKER_BY_CLASS } from './config.mjs'
+import { CIRCUIT_BREAKER_BY_CLASS, MODEL_REGISTRY } from './config.mjs'
+import { substituteChain } from './model-successors.mjs'
 import { readCache } from './preflight.mjs'
 import { circuitBreakerOpen } from './breakers.mjs'
 import { readDiscovery } from './discovery.mjs'
@@ -250,7 +251,14 @@ export async function route({
   // an accepted addition becomes eligible for promotion once it has metrics.
   const effective = effectiveChainFor(taskType, entry.chain, env)
   const applied = acceptedOrderFor(taskType, env, { chain: effective })
-  const chain = applied ? applied.chain : effective
+  // Pinned ids that vanished from their CLI's live catalog are swapped for
+  // the discovered successor (src/model-successors.mjs) AFTER ordering, so
+  // the substitute takes the vanished candidate's exact slot in the chain.
+  const { chain, substitutions } = substituteChain(applied ? applied.chain : effective, {
+    discovery: readDiscovery(env),
+    registry: MODEL_REGISTRY,
+    env,
+  })
   const appliedProposal = applied ? { id: applied.proposalId } : null
 
   const evaluated = chain.map((c) => ({ candidate: c, ...evaluateCandidate(c, env) }))
@@ -298,6 +306,7 @@ export async function route({
       ranking: [],
       reason: `every candidate for "${taskType}" is unavailable: ${detail} (${entry.why})`,
       appliedProposal,
+      substitutions,
     }
   }
 
@@ -406,6 +415,7 @@ export async function route({
       ranking: [],
       reason: `every candidate for "${taskType}" is unavailable: ${detail} (${entry.why})`,
       appliedProposal,
+      substitutions,
     }
   }
 
@@ -436,6 +446,7 @@ export async function route({
     ranking,
     reason: entry.why,
     appliedProposal,
+    substitutions,
   }
 }
 
