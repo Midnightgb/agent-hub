@@ -14,6 +14,8 @@
 | `AGENT_HUB_OPENCODE_BRIDGE` | `1` enables the OpenCode lifecycle bridge: when a delegated job finishes, agent-hub resumes the originating OpenCode session with `POST /api/session/{id}/prompt` (`{ text, resume: true }`), reading the service URL/password from `~/.local/state/opencode/service.json` (override with `AGENT_HUB_OPENCODE_SERVICE_FILE`). Default off. |
 | `AGENT_HUB_OPENCODE_SERVICE_FILE` | Path override for the OpenCode service credentials file (default `~/.local/state/opencode/service.json`). |
 | `AGENT_HUB_HARNESS` | Default caller harness profile: `generic` (waitMode: `none`), `claude-code` (waitMode: `attention`), or `opencode` (waitMode: `attention`). |
+| `AGENT_HUB_MCP_TASKS` | `off` (or `0`/`false`) turns off MCP task support for `delegate`/`dispatch`: no `tasks` server capability, no `execution.taskSupport` in `tools/list`. Default on. See [Job notifications over MCP](../execution.md#job-notifications-over-mcp). |
+| `AGENT_HUB_CHANNEL` | `1` makes the MCP server a Claude Code channel: it declares `experimental['claude/channel']` and pushes one `<channel>` event when a job started by `delegate`/`dispatch` reaches a terminal state. Default off; Claude Code must also load the server as a channel. |
 | `AGENT_HUB_LEASE_TTL_MS` | Lease TTL in milliseconds for write-mode worktree locks (default 120,000 ms / 2 min). |
 | `AGENT_HUB_DISABLE_STARTUP_DISCOVERY` | `1` skips the background discovery pass on MCP startup. Used by tests that boot the real stdio server and must not spawn a real CLI as a side effect. |
 | `AGENT_HUB_CODEXBAR_URL` | Base URL for the local CodexBar quota server (default `http://127.0.0.1:8787`). |

@@ -22,6 +22,10 @@ import { learningProposeTool, learningProbeTool, learningProbeResultTool } from 
 import { agentSendMessageTool, agentInboxTool, agentAckTool, agentPeersTool } from './tools/messaging.mjs'
 import { scheduleStartupDiscovery, scheduleQuotaWarmup } from './startup.mjs'
 import { dispatch } from './dispatch.mjs'
+import { cancelJob } from './jobrunner.mjs'
+import { installTaskSupport, tasksEnabled, TASKS_CAPABILITY, HubTaskStore } from './notify/mcp-tasks.mjs'
+import { channelEnabled, trackJobForChannel, CHANNEL_CAPABILITY, CHANNEL_INSTRUCTIONS } from './notify/mcp-channel.mjs'
+import { jobIdOf } from './notify/mcp-jobs.mjs'
 import { recordDispatchOrigin } from './harness/origin.mjs'
 import { clientHintForName, getClientHint, setClientHint } from './harness/registry.mjs'
 import {
@@ -233,8 +237,30 @@ export function captureClientHintFromServer(server = mcpServerRef) {
   }
 }
 
-export function buildServer() {
-  const server = new McpServer({ name: 'agent-hub', version: VERSION })
+/**
+ * @param {object} [options]
+ * @param {object} [options.env] environment (AGENT_HUB_MCP_TASKS, AGENT_HUB_CHANNEL)
+ * @param {object} [options.deps] test seams: dispatch, delegateTool, cancelJob, readResult
+ * @param {number} [options.taskPollMs] how often a task/channel watcher reads the job record
+ */
+export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } = {}) {
+  const withTasks = tasksEnabled(env)
+  const channelOnly = channelEnabled(env)
+  const dispatchFn = deps.dispatch ?? dispatch
+  const delegateFn = deps.delegateTool ?? delegateTool
+  const server = new McpServer(
+    { name: 'agent-hub', version: VERSION },
+    {
+      // Capabilities only: they never change a tool result. Tasks are off with
+      // AGENT_HUB_MCP_TASKS=off; the channel is opt-in (AGENT_HUB_CHANNEL=1).
+      capabilities: {
+        ...(withTasks ? { tasks: TASKS_CAPABILITY } : {}),
+        ...(channelOnly ? { experimental: { [CHANNEL_CAPABILITY]: {} } } : {}),
+      },
+      ...(withTasks ? { taskStore: new HubTaskStore() } : {}),
+      ...(channelOnly ? { instructions: CHANNEL_INSTRUCTIONS } : {}),
+    }
+  )
   // Remember the server so getMcpClientHint() can read the live handshake
   // (clientInfo.name) once the client connects — see below.
   mcpServerRef = server
@@ -424,6 +450,49 @@ export function buildServer() {
     )
   )
 
+  // Tools whose job outlives the call: a client that asks for a task (or, opted
+  // in, a Claude Code channel) is told when the job finishes. See src/notify/mcp-*.mjs.
+  const taskTools = new Map()
+  // Channel mode only: watch the job a plain call started and push one terminal
+  // event. The tool result is the handler's own, unchanged.
+  const withChannel = (tool, handler) => async (args, extra) => {
+    if (!channelOnly) return handler(args, extra, {})
+    const attempts = []
+    const payload = await handler(args, extra, { onAttempt: (a) => attempts.push(a) })
+    const jobId = jobIdOf(payload)
+    if (jobId) trackJobForChannel({ mcpServer: server, jobId, tool, attempts, env, readResultFn: deps.readResult, pollMs: taskPollMs })
+    return payload
+  }
+  const delegateInput = {
+    agent: agentEnum,
+    model: z.string().min(1),
+    task: z.string().min(1).describe('The prompt/task text.'),
+    cwd: z.string().min(1),
+    mode: modeEnum.optional().default('read'),
+    timeoutS: z.number().int().positive().optional(),
+    title: z.string().optional(),
+    variant: z.string().optional().describe('opencode reasoning effort (minimal/low/medium/high/max), or gentle-shell thinking level (--thinking); ignored by agy/copilot.'),
+    taskType: taskTypeArg,
+    profile: z.string().optional().describe(
+      'agys account to run an agy job on; omit for automatic quota/load-balanced selection. Only meaningful for agent "agy"; rejected for any other agent.'
+    ),
+    verify: z.array(VerifyCheckInput).optional().describe(
+      'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
+    ),
+    isolation: isolationArg,
+    output: outputArg,
+    writeScope: writeScopeArg,
+  }
+
+  const delegateHandler = ({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output, writeScope }, extra) => {
+    const res = delegateFn({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output, writeScope })
+    // C1.2 origin mapping (best-effort, mapping-only): remember which
+    // harness session this job came from for a future wake-up bridge.
+    recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
+    return res
+  }
+  taskTools.set('delegate', { schema: z.object(delegateInput), handler: delegateHandler })
+
   register(
     'delegate',
     {
@@ -431,31 +500,14 @@ export function buildServer() {
       description:
         'RAW ESCAPE HATCH: runs exactly the agent and model you name, with no routing, no policy recovery, no circuit ' +
         'breakers, no dispatch-key idempotency and no execution lineage. Most callers want dispatch(), which adds all of ' +
-        'those around the same task. Use delegate() only when you must pin one exact pair and handle failures yourself. ' +
+        'those around the same task. Use delegate() only when you must pin one exact pair and handle failures yourself: ' +
+        'a quota or auth failure here is final, nothing retries it or moves it to another agent, so for any write job that ' +
+        'could run on more than one agent call dispatch() instead. ' +
         'Returns {jobId, status:"queued"} immediately and never waits; ' +
-        'poll with job_wait or job_status, read with job_result. Write mode with a writeScope runs in a hub-managed ' +
+        'poll with job_wait or job_status, read with job_result (task-capable MCP clients may call it as a task and are notified at the end instead). Write mode with a writeScope runs in a hub-managed ' +
         'scratch copy and applies only its in-scope diff to your tree (no worktree); without a writeScope it requires cwd to be a secondary ' +
         '`git worktree add` checkout. Read jobs need no worktree: fan out several in parallel in your own checkout (see isolation). Codex (model "default") has a limited plan quota and is only a LAST fallback, never a primary.',
-      inputSchema: {
-        agent: agentEnum,
-        model: z.string().min(1),
-        task: z.string().min(1).describe('The prompt/task text.'),
-        cwd: z.string().min(1),
-        mode: modeEnum.optional().default('read'),
-        timeoutS: z.number().int().positive().optional(),
-        title: z.string().optional(),
-        variant: z.string().optional().describe('opencode reasoning effort (minimal/low/medium/high/max), or gentle-shell thinking level (--thinking); ignored by agy/copilot.'),
-        taskType: taskTypeArg,
-        profile: z.string().optional().describe(
-          'agys account to run an agy job on; omit for automatic quota/load-balanced selection. Only meaningful for agent "agy"; rejected for any other agent.'
-        ),
-        verify: z.array(VerifyCheckInput).optional().describe(
-          'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
-        ),
-        isolation: isolationArg,
-        output: outputArg,
-        writeScope: writeScopeArg,
-      },
+      inputSchema: delegateInput,
       outputSchema: DelegateResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
@@ -463,14 +515,50 @@ export function buildServer() {
     // for the job) -- do not reach for .then() here. guard() awaits whatever
     // the handler returns, so a plain object is correct. dispatch() below can
     // use .then() only because it really is async.
-    guard(({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output, writeScope }, extra) => {
-      const res = delegateTool({ agent, model, task, cwd, mode, timeoutS, title, variant, taskType, profile, verify, isolation, output, writeScope })
+    guard(withChannel('delegate', delegateHandler))
+  )
+
+  const dispatchInput = {
+    task: z.string().min(1).describe('The prompt/task text.'),
+    cwd: z.string().min(1),
+    taskType: taskTypeArg.optional(),
+    mode: modeEnum.optional().describe(
+      'Explicit mode for every chain step (timeout, write lock, writeScope); a differing step mode is reported as modeOverride. ' +
+      'Omit to let each chain step\'s declared mode apply (fallback read). A writeScope requires an explicit mode "write".'
+    ),
+    workflowStep: z.string().optional().describe('Workflow step identifier used in key derivation.'),
+    dispatchKey: z.string().optional().describe('Explicit idempotency key. Defaults to sha256(task+cwd+taskType+workflowStep).'),
+    attempt: z.number().int().positive().optional().default(1),
+    parentExecutionId: z.string().optional(),
+    rootExecutionId: z.string().optional(),
+    timeoutS: z.number().int().positive().optional(),
+    waitMode: waitModeEnum.optional().describe('none: return at create/start; attention: also return on waiting/attention; terminal: terminal status only. Defaults to the harness profile.'),
+    harness: harnessEnum.optional().describe('Explicit harness profile; beats AGENT_HUB_HARNESS env and the MCP client hint.'),
+    profile: z.string().optional().describe(
+      'agys account to run an agy job on; omit for automatic quota/load-balanced selection. Only meaningful when the routed candidate is agent "agy"; rejected otherwise.'
+    ),
+    verify: z.array(VerifyCheckInput).optional().describe(
+      'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
+    ),
+    isolation: isolationArg,
+    output: outputArg,
+    writeScope: writeScopeArg,
+    fanout: z.boolean().optional().describe('Also start the read-only parallelWith reviewer(s) declared on the routed chain step (e.g. adversarial-review: agy + copilot) and return them as parallelJobs; wait on all with job_wait({jobIds}). Default false.'),
+    label: z.string().min(1).optional().describe('Fan-out: a distinct label per call keeps N identical dispatches (e.g. parallel reviewers) from deduplicating into one job. Ignored when dispatchKey is given.'),
+    requirements: z
+      .array(z.string())
+      .optional()
+      .describe('Capability keys every routed candidate must have (same keys as route), on top of the taskType\'s own (ui-test requires browser). A candidate missing one is skipped.'),
+  }
+
+  const dispatchHandler = ({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, requirements }, extra, { onAttempt } = {}) =>
+    dispatchFn({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, ...(requirements?.length ? { requirements } : {}), onAttempt, clientHint: getMcpClientHint() }).then((res) => {
       // C1.2 origin mapping (best-effort, mapping-only): remember which
-      // harness session this job came from for a future wake-up bridge.
-      recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
+      // harness session this dispatch came from for a future wake-up bridge.
+      recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })
       return res
     })
-  )
+  taskTools.set('dispatch', { schema: z.object(dispatchInput), handler: dispatchHandler })
 
   register(
     'dispatch',
@@ -484,50 +572,15 @@ export function buildServer() {
         'An explicit waitMode always beats the harness default; the MCP client hint only supplies that default. ' +
         'waiting≠failure — act via jules_interact/job_reply, then observe again. ' +
         'An explicit mode wins over every routed chain step\'s own mode (reported as modeOverride: {requested, stepMode} when they differ); ' +
-        'omit mode to let each chain step\'s declared mode apply (default read).',
-      inputSchema: {
-        task: z.string().min(1).describe('The prompt/task text.'),
-        cwd: z.string().min(1),
-        taskType: taskTypeArg.optional(),
-        mode: modeEnum.optional().describe(
-          'Explicit mode for every chain step (timeout, write lock, writeScope); a differing step mode is reported as modeOverride. ' +
-          'Omit to let each chain step\'s declared mode apply (fallback read). A writeScope requires an explicit mode "write".'
-        ),
-        workflowStep: z.string().optional().describe('Workflow step identifier used in key derivation.'),
-        dispatchKey: z.string().optional().describe('Explicit idempotency key. Defaults to sha256(task+cwd+taskType+workflowStep).'),
-        attempt: z.number().int().positive().optional().default(1),
-        parentExecutionId: z.string().optional(),
-        rootExecutionId: z.string().optional(),
-        timeoutS: z.number().int().positive().optional(),
-        waitMode: waitModeEnum.optional().describe('none: return at create/start; attention: also return on waiting/attention; terminal: terminal status only. Defaults to the harness profile.'),
-        harness: harnessEnum.optional().describe('Explicit harness profile; beats AGENT_HUB_HARNESS env and the MCP client hint.'),
-        profile: z.string().optional().describe(
-          'agys account to run an agy job on; omit for automatic quota/load-balanced selection. Only meaningful when the routed candidate is agent "agy"; rejected otherwise.'
-        ),
-        verify: z.array(VerifyCheckInput).optional().describe(
-          'Optional hub-run verification checks (argv kind at minimum), run in the foreground in the job cwd once it succeeds — never ask the agent to run tests/builds itself. See docs/verification.md.'
-        ),
-        isolation: isolationArg,
-        output: outputArg,
-        writeScope: writeScopeArg,
-        fanout: z.boolean().optional().describe('Also start the read-only parallelWith reviewer(s) declared on the routed chain step (e.g. adversarial-review: agy + copilot) and return them as parallelJobs; wait on all with job_wait({jobIds}). Default false.'),
-        label: z.string().min(1).optional().describe('Fan-out: a distinct label per call keeps N identical dispatches (e.g. parallel reviewers) from deduplicating into one job. Ignored when dispatchKey is given.'),
-        requirements: z
-          .array(z.string())
-          .optional()
-          .describe('Capability keys every routed candidate must have (same keys as route), on top of the taskType\'s own (ui-test requires browser). A candidate missing one is skipped.'),
-      },
+        'omit mode to let each chain step\'s declared mode apply (default read). ' +
+        'Prefer this over delegate(): it routes, retries and falls back. ' +
+        'Task-capable MCP clients may call it as a task and are notified when the job reaches a terminal state ' +
+        '(see docs/execution.md, "Job notifications over MCP").',
+      inputSchema: dispatchInput,
       outputSchema: DispatchResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, requirements }, extra) =>
-      dispatch({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, ...(requirements?.length ? { requirements } : {}), clientHint: getMcpClientHint() }).then((res) => {
-        // C1.2 origin mapping (best-effort, mapping-only): remember which
-        // harness session this dispatch came from for a future wake-up bridge.
-        recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })
-        return res
-      })
-    )
+    guard(withChannel('dispatch', dispatchHandler))
   )
 
   register(
@@ -1234,6 +1287,10 @@ export function buildServer() {
       ],
     })
   )
+
+  if (withTasks) {
+    installTaskSupport(server, { tools: taskTools, env, readResultFn: deps.readResult, cancelJobFn: deps.cancelJob ?? cancelJob, pollMs: taskPollMs })
+  }
 
   return server
 }

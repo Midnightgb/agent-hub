@@ -108,6 +108,53 @@ specific client: `generic` (`waitMode: none`), `claude-code` (`attention`), and
     reading service URL and credentials from `~/.local/state/opencode/service.json`
     (`AGENT_HUB_OPENCODE_SERVICE_FILE`). Delivery never throws.
 
+## Job notifications over MCP
+
+`delegate` and `dispatch` return as soon as the job starts, so a client that
+does not poll `job_status` never learns that the job failed (for example on a
+quota error). Two opt-in-by-the-client mechanisms tell it instead. Neither
+changes a tool result for a client that does not use it, and neither touches
+`events.jsonl`; both live in `src/notify/mcp-*.mjs` and only exist for the life
+of the MCP session.
+
+**MCP tasks** (spec 2025-11-25, experimental task-augmented `tools/call`). The
+server declares `tasks.requests.tools.call` and lists `delegate`/`dispatch`
+with `execution.taskSupport: "optional"`. A client that sends `tools/call` with
+a `task` param gets a `CreateTaskResult` at once; the hub watches the job and
+moves the task to `completed` (job `succeeded`), `failed` (job `failed`, which
+includes timeouts) or `cancelled` (job `canceled`), and the SDK emits
+`notifications/tasks/status`. On failure the task `statusMessage` and the
+`tasks/result` payload carry `errorKind`, `error`, `agent`/`model` and, for
+`dispatch`, `attempts[]` (every start attempt, retries and fallbacks included,
+the last one with the job's final outcome). `tasks/cancel` cancels the job.
+A call without a `task` param, and every other tool, is served exactly as
+before. `AGENT_HUB_MCP_TASKS=off` disables it.
+
+**Claude Code channel** (`AGENT_HUB_CHANNEL=1`). The server declares
+`experimental['claude/channel']` and, for every job a plain `delegate`/`dispatch`
+call starts, pushes one `notifications/claude/channel` event at the terminal
+state, which Claude Code renders as a `<channel source="agent-hub" ...>` message.
+Claude Code has to load the server as a channel
+(`claude --dangerously-load-development-channels server:agent-hub` while
+channels are a research preview), otherwise it drops the events.
+
+Limits that matter:
+
+- `dispatch` only retries and falls back while a job fails to **start**
+  (preflight, breaker, lock). A job that starts and then hits a quota error is
+  finalized as `failed` and is not rerouted; the notification is how you find
+  out. Prefer `dispatch` over `delegate` anyway: `delegate` never retries
+  anything.
+- Claude Code speaks the newer tasks extension of protocol revision 2026-07-28
+  (`resultType: "task"`, per-request capability `_meta`, `tasks/get` polling).
+  The 1.x TypeScript SDK this server uses implements the 2025-11-25 tasks and the
+  `initialize` handshake, so Claude Code does not see these tasks today; clients
+  that implement 2025-11-25 tasks (and the channel above) do. The 2026-07-28
+  shape needs the 2.x SDK (`@modelcontextprotocol/server`, zod 4).
+- `job_wait` is unchanged: it already blocks until terminal or attention.
+- A Jules session that needs attention (`AWAITING_*`/`PAUSED`) is not pushed;
+  `job_wait`/`jules_wait` still report it.
+
 ## Task assignments
 
 An assignment keeps one plan task in one agent's native CLI session across

@@ -520,6 +520,10 @@ export async function dispatch({
   classifyErrorFn = classifyError,
   adapterForFn = defaultAdapterFor,
   cancelJobFn = defaultCancelJob,
+  // MCP task/channel notifications: called once per start attempt (agent/model
+  // tried, in order, including candidates that failed to start and were fallen
+  // back from), so a failure notice can list what was tried. Observation only.
+  onAttempt = null,
   ...restDeps
 } = {}) {
   // D2: reject an invalid verify check before any state (breaker checks,
@@ -1016,38 +1020,49 @@ export async function dispatch({
           profileStatus = memoEntry?.profileStatus ?? null
         }
 
-        const startResult = await startJobFn({
-          agent: candidate.agent,
-          model: candidate.model,
-          task,
-          cwd,
-          mode: stepMode,
-          timeoutS: effectiveTimeoutS,
-          taskType,
-          dispatchKey: key,
-          executionId: execId,
-          attempt: attemptNum,
-          parentExecutionId,
-          rootExecutionId: rootExecId,
-          reservationToken,
-          adoptWriteLockFn,
-          workflow_id: restDeps.workflowId ?? restDeps.workflow_id,
-          step_id: workflowStep ?? restDeps.step_id,
-          sessionId: activeCtx.sessionId,
-          resumed: activeCtx.resumed,
-          env,
-          ...restDeps,
-          verify,
-          ...(isolation ? { isolation } : {}),
-          ...(output ? { output } : {}),
-          ...(writeScope != null && stepMode === 'write' ? { writeScope } : {}),
-          profile,
-          profileStatus,
-          ...(requireBrowser ? { requireBrowser } : {}),
-          // Resolved contract always wins over caller extras.
-          harness: harnessProfile.id,
-          waitMode: effectiveWaitMode,
-        })
+        const reportAttempt = (outcome) => {
+          try {
+            onAttempt?.({ agent: candidate.agent, model: candidate.model, ...outcome })
+          } catch {}
+        }
+        let startResult
+        try {
+          startResult = await startJobFn({
+            agent: candidate.agent,
+            model: candidate.model,
+            task,
+            cwd,
+            mode: stepMode,
+            timeoutS: effectiveTimeoutS,
+            taskType,
+            dispatchKey: key,
+            executionId: execId,
+            attempt: attemptNum,
+            parentExecutionId,
+            rootExecutionId: rootExecId,
+            reservationToken,
+            adoptWriteLockFn,
+            workflow_id: restDeps.workflowId ?? restDeps.workflow_id,
+            step_id: workflowStep ?? restDeps.step_id,
+            sessionId: activeCtx.sessionId,
+            resumed: activeCtx.resumed,
+            env,
+            ...restDeps,
+            verify,
+            ...(isolation ? { isolation } : {}),
+            ...(output ? { output } : {}),
+            ...(writeScope != null && stepMode === 'write' ? { writeScope } : {}),
+            profile,
+            profileStatus,
+            ...(requireBrowser ? { requireBrowser } : {}),
+            // Resolved contract always wins over caller extras.
+            harness: harnessProfile.id,
+            waitMode: effectiveWaitMode,
+          })
+        } catch (startError) {
+          reportAttempt({ jobId: null, status: 'failed', errorKind: startError?.errorKind ?? null, error: String(startError?.message ?? startError) })
+          throw startError
+        }
 
         reservationAdopted = true
 
@@ -1055,6 +1070,7 @@ export async function dispatch({
         const status = job?.status
         const error = job?.error
         const errorKind = job?.errorKind
+        reportAttempt({ jobId: job?.jobId ?? null, status: status ?? null, errorKind: errorKind ?? null, error: error ?? null })
         const currentSessionId = job?.sessionId ?? job?.remote?.sessionId ?? startResult?.sessionId ?? activeCtx.sessionId
 
         return {

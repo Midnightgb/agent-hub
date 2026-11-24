@@ -51,6 +51,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   skipped, empty profile entries are replaced and non-empty ones are moved to
   `<path>.bak-<epoch>` first. `--mcp-merge` keeps a per-profile MCP config and
   merges the base servers into it instead.
+- MCP job notifications: a client that calls `delegate` or `dispatch` as an MCP
+  task (spec 2025-11-25 `tools/call` with a `task` param) gets a task id at once
+  and a `notifications/tasks/status` when the job succeeds, fails (including
+  quota and timeouts) or is canceled. A failure carries `errorKind`, `error`,
+  `agent`/`model` and, for `dispatch`, every start attempt tried (retries and
+  fallbacks); `tasks/cancel` cancels the job. Calls without a `task` param keep
+  their exact result. `AGENT_HUB_MCP_TASKS=off` disables it.
+- Opt-in Claude Code channel (`AGENT_HUB_CHANNEL=1`): the server pushes one
+  `<channel>` event when a job started by `delegate`/`dispatch` ends.
+- `dispatch` takes an `onAttempt` hook that reports each start attempt; the
+  `delegate` and `dispatch` tool descriptions now steer callers to `dispatch`.
+
 - Learning probes: `learning_probe` runs the same read task as a control job
   (approved learnings) and a treatment job (plus one pending learning) in
   parallel; `learning_probe_result` compares them (status, errorKind,
@@ -124,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `@modelcontextprotocol/sdk` ^1.30.0 -> ^1.32.2 (no API changes needed here).
 - `dispatch`: an explicit `mode` now wins over the routed chain step's own
   mode on every step (adaptive timeout, `startJob`, per-cwd write-lock
   reservation, `writeScope` forwarding). When they differ the response carries
