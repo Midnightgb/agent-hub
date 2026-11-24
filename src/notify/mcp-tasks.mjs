@@ -1,160 +1,152 @@
 /**
- * MCP tasks for long-running hub tools (MCP spec 2025-11-25 "tasks", the
- * experimental task-augmented tools/call implemented by @modelcontextprotocol/sdk 1.x).
+ * MCP tasks for long-running hub tools: the `io.modelcontextprotocol/tasks`
+ * extension of protocol revision 2026-07-28 (https://modelcontextprotocol.io/extensions/tasks/overview),
+ * which is what Claude Code speaks.
  *
- * A client that sends `tools/call` with a `task` param for delegate/dispatch
- * gets a CreateTaskResult at once; the hub then watches the job and moves the
- * task to completed/failed, which the SDK announces with
- * notifications/tasks/status. Every other call (no `task` param, any other tool)
- * goes to the SDK's own handler untouched, so its result is byte-identical.
+ * A client that declares the extension in the per-request capabilities
+ * (`_meta["io.modelcontextprotocol/clientCapabilities"].extensions`) and calls
+ * delegate or dispatch gets a task handle (`resultType: "task"`) at once; the
+ * hub follows the job and answers `tasks/get` with working, then completed
+ * (result), failed (error with errorKind, error, agent/model, attempts) or
+ * cancelled. Every other call (a legacy 2025-era connection, a 2026 client
+ * without the extension, any other tool) goes to the SDK's own tools/call
+ * handler untouched, so its result is byte-identical.
  *
- * The SDK's McpServer registers tools as taskSupport "forbidden" and its own
- * tools/call handler would then run a task-augmented call as a plain one, so
- * this wraps the two request handlers. That reads the SDK's private handler map
- * (Server._requestHandlers); installTaskSupport() returns false, and tasks stay
- * off, if a future SDK removes it. test/mcp-task-notifications.test.mjs fails
- * loudly in that case.
+ * The 2.x SDK ships no task engine (the 1.x experimental one was removed), so the
+ * three task methods are served here. tools/call is wrapped through
+ * Server._getRequestHandler, which is underscored in the SDK; installTaskSupport()
+ * returns false and tasks stay off if it ever disappears (a test fails loudly).
  */
-import { InMemoryTaskStore } from '@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js'
-import { CallToolRequestSchema, ListToolsRequestSchema, McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js'
-import { watchJobUntilTerminal, jobIdOf, buildJobNotice, noticeText } from './mcp-jobs.mjs'
+import * as z from 'zod'
+import { ProtocolError, ProtocolErrorCode, CLIENT_CAPABILITIES_META_KEY } from '@modelcontextprotocol/server'
+import { jobIdOf, buildJobNotice, noticeText, isTerminalStatus } from './mcp-jobs.mjs'
 
-export const TASKS_CAPABILITY = Object.freeze({ list: {}, cancel: {}, requests: { tools: { call: {} } } })
+export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks'
+export const TASKS_CAPABILITIES = Object.freeze({ extensions: { [TASKS_EXTENSION]: {} } })
 
-const DEFAULT_TTL_MS = 60 * 60 * 1000
-const POLL_INTERVAL_MS = 2000
-const STATUS_MESSAGE_META = 'agent-hub/statusMessage'
+const POLL_INTERVAL_MS = 3000
+// -32000..-32019 is the implementation-defined range of the 2026-07-28 error code policy.
+const JOB_FAILED_CODE = -32000
 
 export function tasksEnabled(env = process.env) {
   const v = String(env?.AGENT_HUB_MCP_TASKS ?? '').trim().toLowerCase()
   return !(v === 'off' || v === '0' || v === 'false')
 }
 
-/**
- * The SDK store has no way to attach a message to a terminal transition, and
- * the failure reason (errorKind, error, agent/model, attempts) must travel in the
- * notifications/tasks/status notification itself.
- */
-export class HubTaskStore extends InMemoryTaskStore {
-  async storeTaskResult(taskId, status, result, sessionId) {
-    await super.storeTaskResult(taskId, status, result, sessionId)
-    const message = result?._meta?.[STATUS_MESSAGE_META]
-    if (message) {
-      const stored = this.tasks.get(taskId)
-      if (stored) stored.task.statusMessage = message
+/** Did this request's client declare the tasks extension (2026-07-28 connections only)? */
+export function clientSupportsTasks(ctx) {
+  const caps = ctx?.mcpReq?.envelope?.[CLIENT_CAPABILITIES_META_KEY]
+  return Boolean(caps?.extensions && TASKS_EXTENSION in caps.extensions)
+}
+
+const textResult = (payload) => ({ content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] })
+
+function taskBase(t) {
+  return {
+    taskId: t.taskId,
+    status: t.status,
+    ...(t.statusMessage ? { statusMessage: t.statusMessage } : {}),
+    createdAt: t.createdAt,
+    lastUpdatedAt: t.lastUpdatedAt,
+    ttlMs: null,
+    pollIntervalMs: POLL_INTERVAL_MS,
+  }
+}
+
+/** The tasks/get body for a tracker (or for a bare job record when this process has no tracker). */
+function taskView(tracker, record) {
+  if (tracker) {
+    const base = taskBase(tracker)
+    if (tracker.status === 'completed') return { ...base, result: textResult(tracker.notice) }
+    if (tracker.status === 'failed') {
+      return { ...base, error: { code: JOB_FAILED_CODE, message: tracker.statusMessage, data: tracker.notice } }
     }
+    return base
   }
-}
-
-const textResult = (payload, extra = {}) => ({
-  content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
-  ...extra,
-})
-
-function failureResult(notice) {
-  return textResult(notice, { isError: true, _meta: { [STATUS_MESSAGE_META]: noticeText(notice) } })
-}
-
-async function runTask({ entry, name, args, extra, taskId, env, readResultFn, cancelJobFn, pollMs }) {
-  const store = extra.taskStore
-  const attempts = []
-  let payload
-  try {
-    payload = await entry.handler(args, extra, { onAttempt: (a) => attempts.push(a) })
-  } catch (error) {
-    const message = `agent-hub error: ${error?.message ?? String(error)}`
-    await store
-      .storeTaskResult(taskId, 'failed', {
-        content: [{ type: 'text', text: message }],
-        isError: true,
-        _meta: { [STATUS_MESSAGE_META]: message },
-      })
-      .catch(() => {})
-    return
-  }
-
-  const jobId = jobIdOf(payload)
-  if (!jobId) {
-    await store.storeTaskResult(taskId, 'completed', textResult(payload)).catch(() => {})
-    return
-  }
-
-  let stopped = false
-  const record = await watchJobUntilTerminal({
-    jobId,
-    env,
-    readResultFn,
-    pollMs,
-    shouldStop: () => stopped,
-    // tasks/cancel marks the task cancelled in the store; stop the job with it.
-    onTick: async () => {
-      const task = await store.getTask(taskId).catch(() => null)
-      if (task?.status === 'cancelled' && !stopped) {
-        stopped = true
-        await cancelJobFn(jobId, { env }).catch(() => {})
-      }
-    },
+  // No tracker: the server restarted, or the job was not started as a task. The
+  // task id is the job id, so the job record still answers (without attempts).
+  const status = record.status === 'succeeded' ? 'completed' : record.status === 'canceled' ? 'cancelled' : isTerminalStatus(record.status) ? 'failed' : 'working'
+  const notice = isTerminalStatus(record.status) ? buildJobNotice(record) : null
+  const created = record.createdAt ?? new Date().toISOString()
+  const base = taskBase({
+    taskId: record.jobId,
+    status,
+    statusMessage: notice ? noticeText(notice) : null,
+    createdAt: created,
+    lastUpdatedAt: record.updatedAt ?? created,
   })
-  if (!record) return
-
-  const notice = {
-    ...buildJobNotice(record, { attempts, tool: name }),
-    ...(payload?.dispatchKey ? { dispatchKey: payload.dispatchKey } : {}),
-    ...(payload?.executionId ? { executionId: payload.executionId } : {}),
-  }
-  if (record.status === 'succeeded') {
-    await store.storeTaskResult(taskId, 'completed', textResult(notice)).catch(() => {})
-  } else if (record.status === 'canceled') {
-    // Cancelled outside the task (job_cancel): the task ends cancelled too.
-    await store.updateTaskStatus(taskId, 'cancelled', noticeText(notice)).catch(() => {})
-  } else {
-    await store.storeTaskResult(taskId, 'failed', failureResult(notice)).catch(() => {})
-  }
+  if (status === 'completed') return { ...base, result: textResult(notice) }
+  if (status === 'failed') return { ...base, error: { code: JOB_FAILED_CODE, message: noticeText(notice), data: notice } }
+  return base
 }
 
 /**
- * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} mcpServer
+ * @param {import('@modelcontextprotocol/server').McpServer} mcpServer
  * @param {object} opts
- * @param {Map<string, {schema: import('zod').ZodTypeAny, handler: Function}>} opts.tools
- *   task-capable tools: zod object schema for the arguments (same defaults the
- *   SDK applies) and the raw handler (args, extra, {onAttempt}) -> payload
+ * @param {Map<string, {schema, handler, track, ok, fail}>} opts.tools task-capable tools:
+ *   handler(args, ctx, hooks) -> payload; track(payload, hooks, args, ctx) -> tracker;
+ *   ok(payload)/fail(error) -> the plain CallToolResult the SDK path would return
+ * @param {import('./mcp-supervisor.mjs').JobSupervisor} opts.supervisor
+ * @param {Function} opts.readResultFn (jobId, env) => record, for tasks/get without a tracker
+ * @param {object} [opts.env]
  */
-export function installTaskSupport(mcpServer, { tools, env = process.env, readResultFn, cancelJobFn, pollMs = 500 }) {
-  const lowLevel = mcpServer.server
-  const handlers = lowLevel?._requestHandlers
-  const originalCall = handlers?.get?.('tools/call')
-  const originalList = handlers?.get?.('tools/list')
-  if (typeof originalCall !== 'function' || typeof originalList !== 'function') return false
+export function installTaskSupport(mcpServer, { tools, supervisor, readResultFn, env = process.env }) {
+  const low = mcpServer.server
+  const originalCall = low?._getRequestHandler?.('tools/call')
+  if (typeof originalCall !== 'function') return false
 
-  lowLevel.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
-    const result = await originalList(request, extra)
-    return {
-      ...result,
-      tools: result.tools.map((tool) => (tools.has(tool.name) ? { ...tool, execution: { ...tool.execution, taskSupport: 'optional' } } : tool)),
-    }
-  })
-
-  lowLevel.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+  low.setRequestHandler('tools/call', async (request, ctx) => {
     const name = request.params.name
     const entry = tools.get(name)
-    if (!request.params.task || !entry || !extra.taskStore) return originalCall(request, extra)
+    if (!entry || !clientSupportsTasks(ctx)) return originalCall(request, ctx)
 
     const parsed = entry.schema.safeParse(request.params.arguments ?? {})
     if (!parsed.success) {
-      throw new McpError(ErrorCode.InvalidParams, `Input validation error: Invalid arguments for tool ${name}: ${parsed.error.message}`)
+      throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Input validation error: Invalid arguments for tool ${name}: ${parsed.error.message}`)
     }
-    const task = await extra.taskStore.createTask({ ttl: request.params.task.ttl ?? DEFAULT_TTL_MS, pollInterval: POLL_INTERVAL_MS })
-    // Deliberately not awaited: the CreateTaskResult goes out now, the task
-    // finishes when the job does.
-    void runTask({ entry, name, args: parsed.data, extra, taskId: task.taskId, env, readResultFn, cancelJobFn, pollMs }).catch(() => {})
-    return {
-      task,
-      _meta: {
-        'io.modelcontextprotocol/model-immediate-response':
-          `${name} started as task ${task.taskId}. The hub reports completion or failure (errorKind, error, agent/model` +
-          `${name === 'dispatch' ? ', fallbacks tried' : ''}) through the task status; no polling is needed.`,
-      },
+    const hooks = { attempts: [], route: null }
+    // The point of a task is not to hold the call: dispatch must not wait for the job here.
+    const args = { ...parsed.data, ...(name === 'dispatch' && parsed.data.waitMode == null ? { waitMode: 'none' } : {}) }
+    let payload
+    try {
+      payload = await entry.handler(args, ctx, {
+        onAttempt: (a) => hooks.attempts.push(a),
+        onRoute: (r) => {
+          hooks.route = r
+        },
+      })
+    } catch (error) {
+      return entry.fail(error)
     }
+    if (!jobIdOf(payload)) return entry.ok(payload)
+    const tracker = entry.track(payload, hooks, args, ctx)
+    return { resultType: 'task', ...taskBase(tracker) }
   })
+
+  const TaskParams = z.object({ taskId: z.string().min(1) }).passthrough()
+  const AnyResult = z.object({}).passthrough()
+
+  low.setRequestHandler('tasks/get', { params: TaskParams, result: AnyResult }, async ({ taskId }) => {
+    const tracker = supervisor.get(taskId)
+    let record = null
+    if (!tracker) {
+      try {
+        record = readResultFn(taskId, env)
+      } catch {
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Failed to retrieve task: Task not found (${taskId})`)
+      }
+    }
+    return { resultType: 'complete', ...taskView(tracker, record) }
+  })
+
+  low.setRequestHandler('tasks/cancel', { params: TaskParams, result: AnyResult }, async ({ taskId }) => {
+    const tracker = supervisor.get(taskId)
+    if (!tracker) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Failed to retrieve task: Task not found (${taskId})`)
+    await supervisor.cancel(taskId)
+    return { resultType: 'complete' }
+  })
+
+  // The hub never asks a task for input, so there is nothing to answer.
+  low.setRequestHandler('tasks/update', { params: TaskParams, result: AnyResult }, async () => ({ resultType: 'complete' }))
   return true
 }

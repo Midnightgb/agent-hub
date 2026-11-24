@@ -524,6 +524,10 @@ export async function dispatch({
   // tried, in order, including candidates that failed to start and were fallen
   // back from), so a failure notice can list what was tried. Observation only.
   onAttempt = null,
+  // Called once when the dispatch started a job, with the candidate that runs
+  // and the routed fallbacks still unused, so a supervisor can reroute after a
+  // quota failure that only shows up once the job is running. Observation only.
+  onRoute = null,
   ...restDeps
 } = {}) {
   // D2: reject an invalid verify check before any state (breaker checks,
@@ -1091,6 +1095,9 @@ export async function dispatch({
 
     jobProduced = true
     recentDispatches.set(key, { job: finalJob, timestamp: nowFn() })
+    try {
+      onRoute?.({ candidate: finalCandidate, remaining: [...execCtx.fallbacks], executionId: execId, rootExecutionId: rootExecId })
+    } catch {}
 
     const finalSessionId =
       execResult?.sessionId ?? finalJob?.sessionId ?? finalJob?.remote?.sessionId ?? resolvedSessionId ?? null

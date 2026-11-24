@@ -1,13 +1,15 @@
 /**
  * Claude Code "channels": a one-way push of a job's terminal state into the
  * session as a <channel> event (https://code.claude.com/docs/en/channels-reference).
+ * Legacy 2025-era connections only: Claude Code does not register channels on
+ * protocol revision 2026-07-28, where tasks do the job.
  *
  * Opt in with AGENT_HUB_CHANNEL=1; Claude Code additionally has to load this
  * server as a channel (--dangerously-load-development-channels server:<name>
  * while channels are a research preview), otherwise it drops the events
  * silently. The tool results are never changed by this.
  */
-import { watchJobUntilTerminal, buildJobNotice, noticeText } from './mcp-jobs.mjs'
+import { noticeText } from './mcp-jobs.mjs'
 
 export const CHANNEL_CAPABILITY = 'claude/channel'
 export const CHANNEL_METHOD = 'notifications/claude/channel'
@@ -35,17 +37,15 @@ function channelMeta(notice) {
 }
 
 /**
- * Watch the job started by a delegate/dispatch call and push one channel event
- * when it is terminal. Fire and forget: a failure to deliver never reaches the tool call.
+ * Push one channel event for a finished job's notice. Fire and forget: a failure
+ * to deliver (for example a 2026-07-28 connection, where channels do not register)
+ * never reaches the tool call.
  */
-export function trackJobForChannel({ mcpServer, jobId, tool, attempts = [], env = process.env, readResultFn, pollMs = 500 }) {
-  void watchJobUntilTerminal({ jobId, env, readResultFn, pollMs })
-    .then((record) => {
-      const notice = buildJobNotice(record, { attempts, tool })
-      return mcpServer.server.notification({
-        method: CHANNEL_METHOD,
-        params: { content: noticeText(notice), meta: channelMeta(notice) },
-      })
+export async function pushChannelNotice(mcpServer, notice) {
+  try {
+    await mcpServer.server.notification({
+      method: CHANNEL_METHOD,
+      params: { content: noticeText(notice), meta: channelMeta(notice) },
     })
-    .catch(() => {})
+  } catch {}
 }

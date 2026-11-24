@@ -396,7 +396,7 @@ export const AgentStatusRow = z
       .object({
         available: z.boolean(),
         base: z.boolean(),
-        profiles: z.record(z.boolean()),
+        profiles: z.record(z.string(), z.boolean()),
       })
       .passthrough()
       .optional(),
@@ -481,9 +481,9 @@ export const Override = z
 
 export const ConfigResponse = z
   .object({
-    delegationMap: z.record(DelegationEntry),
-    discovery: z.record(DiscoveryEntry),
-    timeouts: z.record(z.record(z.number())),
+    delegationMap: z.record(z.string(), DelegationEntry),
+    discovery: z.record(z.string(), DiscoveryEntry),
+    timeouts: z.record(z.string(), z.record(z.string(), z.number())),
     breaker: z
       .object({
         windowMs: z.number(),
@@ -497,14 +497,14 @@ export const ConfigResponse = z
     writeAllowlist: z.array(z.string()),
     breakerState: z.array(BreakerState),
     // readOverrides() returns {} but a hand-edited file may hold [].
-    overrides: z.union([z.record(Override), z.array(z.unknown())]),
+    overrides: z.union([z.record(z.string(), Override), z.array(z.unknown())]),
     process: z
       .object({
         pid: z.number(),
         nodeVersion: z.string(),
         platform: z.string(),
         pathEntries: z.array(z.string()),
-        resolvedBins: z.record(z.string().nullable()),
+        resolvedBins: z.record(z.string(), z.string().nullable()),
       })
       .passthrough(),
   })
@@ -523,7 +523,7 @@ export const MetricsRow = z
     successRate: z.number().min(0).max(1).nullable(),
     p50Ms: z.number().nullable(),
     p95Ms: z.number().nullable(),
-    errorKinds: z.record(z.number()),
+    errorKinds: z.record(z.string(), z.number()),
     tokensTotal: z.number(),
     tokensAvg: z.number().nullable(),
     costUsdTotal: z.number().nullable().optional(),
@@ -532,7 +532,7 @@ export const MetricsRow = z
     verifiedSamples: z.number().int().nonnegative().optional(),
     verifiedRate: z.number().min(0).max(1).nullable().optional(),
     verificationFailures: z.number().int().nonnegative().optional(),
-    judgeVerdicts: z.record(z.number()).optional(),
+    judgeVerdicts: z.record(z.string(), z.number()).optional(),
     revisionTotal: z.number().optional(),
     revisionAvg: z.number().nullable().optional(),
     retryCount: z.number().int().nonnegative().optional(),
@@ -580,6 +580,7 @@ export const Proposal = z
     addCandidate: AddCandidate.nullable().optional(),
     replaces: z.string().nullable().optional(),
     evidence: z.record(
+      z.string(),
       z
         .object({
           samples: z.number(),
@@ -685,7 +686,7 @@ export const RouteResult = z
     primary: ChainStep.nullable(),
     fallbacks: z.array(ChainStep),
     skipped: z.array(z.object({ agent: z.string(), model: z.string(), reason: z.string() }).passthrough()),
-    discovery: z.record(z.union([DiscoverySummary, DiscoveryEntry]).nullable()),
+    discovery: z.record(z.string(), z.union([DiscoverySummary, DiscoveryEntry]).nullable()),
     reason: z.string(),
     appliedProposal: z.object({ id: z.string() }).passthrough().nullable().optional(),
   })

@@ -1,5 +1,5 @@
-import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { McpServer, ResourceTemplate, CLIENT_INFO_META_KEY } from '@modelcontextprotocol/server'
+import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,8 +23,10 @@ import { agentSendMessageTool, agentInboxTool, agentAckTool, agentPeersTool } fr
 import { scheduleStartupDiscovery, scheduleQuotaWarmup } from './startup.mjs'
 import { dispatch } from './dispatch.mjs'
 import { cancelJob } from './jobrunner.mjs'
-import { installTaskSupport, tasksEnabled, TASKS_CAPABILITY, HubTaskStore } from './notify/mcp-tasks.mjs'
-import { channelEnabled, trackJobForChannel, CHANNEL_CAPABILITY, CHANNEL_INSTRUCTIONS } from './notify/mcp-channel.mjs'
+import { installTaskSupport, tasksEnabled, TASKS_CAPABILITIES } from './notify/mcp-tasks.mjs'
+import { channelEnabled, pushChannelNotice, CHANNEL_CAPABILITY, CHANNEL_INSTRUCTIONS } from './notify/mcp-channel.mjs'
+import { JobSupervisor } from './notify/mcp-supervisor.mjs'
+import { rerouteEnabled, maxReroutes } from './reroute.mjs'
 import { jobIdOf } from './notify/mcp-jobs.mjs'
 import { recordDispatchOrigin } from './harness/origin.mjs'
 import { clientHintForName, getClientHint, setClientHint } from './harness/registry.mjs'
@@ -213,6 +215,13 @@ let mcpServerRef = null
  * explicit harness/env/waitMode and never decide anything
  * security-sensitive (see src/harness/registry.mjs).
  */
+export function clientHintFromCtx(ctx) {
+  // 2026-07-28 connections carry the client identity on every request (the
+  // handshake getClientVersion() reads does not exist there).
+  const name = ctx?.mcpReq?.envelope?.[CLIENT_INFO_META_KEY]?.name
+  return clientHintForName(name) ?? getMcpClientHint()
+}
+
 export function getMcpClientHint() {
   try {
     const info = mcpServerRef?.server?.getClientVersion?.() ?? mcpServerRef?.getClientVersion?.()
@@ -251,16 +260,17 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
   const server = new McpServer(
     { name: 'agent-hub', version: VERSION },
     {
-      // Capabilities only: they never change a tool result. Tasks are off with
-      // AGENT_HUB_MCP_TASKS=off; the channel is opt-in (AGENT_HUB_CHANNEL=1).
+      // Capabilities only: they never change a tool result. Tasks (the 2026-07-28
+      // extension) are off with AGENT_HUB_MCP_TASKS=off; the channel is opt-in
+      // (AGENT_HUB_CHANNEL=1).
       capabilities: {
-        ...(withTasks ? { tasks: TASKS_CAPABILITY } : {}),
+        ...(withTasks ? TASKS_CAPABILITIES : {}),
         ...(channelOnly ? { experimental: { [CHANNEL_CAPABILITY]: {} } } : {}),
       },
-      ...(withTasks ? { taskStore: new HubTaskStore() } : {}),
       ...(channelOnly ? { instructions: CHANNEL_INSTRUCTIONS } : {}),
     }
   )
+  const supervisor = new JobSupervisor({ env, readResultFn: deps.readResult, cancelJobFn: deps.cancelJob ?? cancelJob, pollMs: taskPollMs })
   // Remember the server so getMcpClientHint() can read the live handshake
   // (clientInfo.name) once the client connects — see below.
   mcpServerRef = server
@@ -272,7 +282,9 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
   // MCP connection. Pure data — importing this module must never connect.
   const register = (name, def, handler) => {
     TOOLS.push({ name, ...def })
-    return server.registerTool(name, def, handler)
+    // zod 4 / Standard Schema: a raw shape ({field: z.string()}) is wrapped in z.object().
+    const inputSchema = def.inputSchema && typeof def.inputSchema.safeParse !== 'function' ? z.object(def.inputSchema) : def.inputSchema
+    return server.registerTool(name, { ...def, ...(inputSchema ? { inputSchema } : {}) }, handler)
   }
 
   register(
@@ -450,17 +462,83 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
     )
   )
 
-  // Tools whose job outlives the call: a client that asks for a task (or, opted
-  // in, a Claude Code channel) is told when the job finishes. See src/notify/mcp-*.mjs.
+  // Tools whose job outlives the call. The supervisor follows the job a call
+  // started (src/notify/mcp-*.mjs): for an MCP task it answers tasks/get, for the
+  // opt-in channel it pushes the terminal state, and for dispatch it reroutes a
+  // quota failure that only shows up once the job runs (src/reroute.mjs).
   const taskTools = new Map()
-  // Channel mode only: watch the job a plain call started and push one terminal
-  // event. The tool result is the handler's own, unchanged.
-  const withChannel = (tool, handler) => async (args, extra) => {
-    if (!channelOnly) return handler(args, extra, {})
-    const attempts = []
-    const payload = await handler(args, extra, { onAttempt: (a) => attempts.push(a) })
+  const rerouteOn = rerouteEnabled(env)
+
+  // A dispatch to continue on the routed fallbacks left over after the job that started.
+  const rerouteSpec = (args, hooks, ctx) => {
+    if (!rerouteOn || !hooks.route?.remaining?.length) return null
+    let n = 0
+    const baseKey = args.dispatchKey ?? hooks.route.executionId
+    return {
+      task: args.task,
+      maxReroutes: maxReroutes(env),
+      remaining: hooks.route.remaining,
+      restart: async ({ candidate, remaining, task, previous }) => {
+        n += 1
+        const attempts = []
+        let route = null
+        try {
+          const res = await dispatchFn({
+            ...args,
+            task,
+            fanout: false,
+            label: undefined,
+            dispatchKey: `${baseKey}#reroute-${n}`,
+            parentExecutionId: hooks.route.executionId,
+            rootExecutionId: hooks.route.rootExecutionId,
+            mode: args.mode ?? previous.mode,
+            waitMode: 'none',
+            routeFn: async () => ({ primary: candidate, fallbacks: remaining }),
+            onAttempt: (a) => attempts.push(a),
+            onRoute: (r) => {
+              route = r
+            },
+            clientHint: clientHintFromCtx(ctx),
+          })
+          return {
+            jobId: jobIdOf(res),
+            agent: res?.candidate?.agent ?? candidate.agent,
+            model: res?.candidate?.model ?? candidate.model,
+            attempts,
+            remaining: route?.remaining ?? [],
+          }
+        } catch (error) {
+          error.attempts = attempts
+          throw error
+        }
+      },
+    }
+  }
+
+  const startTracking = (tool, payload, hooks, args, ctx) => {
     const jobId = jobIdOf(payload)
-    if (jobId) trackJobForChannel({ mcpServer: server, jobId, tool, attempts, env, readResultFn: deps.readResult, pollMs: taskPollMs })
+    if (!jobId) return null
+    return supervisor.start({
+      tool,
+      jobId,
+      attempts: hooks.attempts,
+      reroute: tool === 'dispatch' ? rerouteSpec(args, hooks, ctx) : null,
+      onTerminal: channelOnly ? (tracker) => void pushChannelNotice(server, tracker.notice) : null,
+    })
+  }
+
+  // Plain (non-task) calls keep their exact result; when a notice or a reroute
+  // can apply, the supervisor follows the job in the background.
+  const withTracking = (tool, handler) => async (args, ctx) => {
+    const hooks = { attempts: [], route: null }
+    const payload = await handler(args, ctx, {
+      onAttempt: (a) => hooks.attempts.push(a),
+      onRoute: (r) => {
+        hooks.route = r
+      },
+    })
+    const wantsReroute = tool === 'dispatch' && rerouteOn && hooks.route?.remaining?.length > 0
+    if (channelOnly || wantsReroute) startTracking(tool, payload, hooks, args, ctx)
     return payload
   }
   const delegateInput = {
@@ -491,7 +569,13 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
     recordDispatchOrigin({ jobId: res?.jobId, extra, harness: null, env: process.env })
     return res
   }
-  taskTools.set('delegate', { schema: z.object(delegateInput), handler: delegateHandler })
+  taskTools.set('delegate', {
+    schema: z.object(delegateInput),
+    handler: delegateHandler,
+    track: (payload, hooks, args, ctx) => startTracking('delegate', payload, hooks, args, ctx),
+    ok: (payload) => ok(payload, payload),
+    fail,
+  })
 
   register(
     'delegate',
@@ -504,7 +588,7 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
         'a quota or auth failure here is final, nothing retries it or moves it to another agent, so for any write job that ' +
         'could run on more than one agent call dispatch() instead. ' +
         'Returns {jobId, status:"queued"} immediately and never waits; ' +
-        'poll with job_wait or job_status, read with job_result (task-capable MCP clients may call it as a task and are notified at the end instead). Write mode with a writeScope runs in a hub-managed ' +
+        'poll with job_wait or job_status, read with job_result (a client that declares the MCP tasks extension gets a task handle and is told when the job ends). Write mode with a writeScope runs in a hub-managed ' +
         'scratch copy and applies only its in-scope diff to your tree (no worktree); without a writeScope it requires cwd to be a secondary ' +
         '`git worktree add` checkout. Read jobs need no worktree: fan out several in parallel in your own checkout (see isolation). Codex (model "default") has a limited plan quota and is only a LAST fallback, never a primary.',
       inputSchema: delegateInput,
@@ -515,7 +599,7 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
     // for the job) -- do not reach for .then() here. guard() awaits whatever
     // the handler returns, so a plain object is correct. dispatch() below can
     // use .then() only because it really is async.
-    guard(withChannel('delegate', delegateHandler))
+    guard(withTracking('delegate', delegateHandler))
   )
 
   const dispatchInput = {
@@ -551,14 +635,20 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
       .describe('Capability keys every routed candidate must have (same keys as route), on top of the taskType\'s own (ui-test requires browser). A candidate missing one is skipped.'),
   }
 
-  const dispatchHandler = ({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, requirements }, extra, { onAttempt } = {}) =>
-    dispatchFn({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, ...(requirements?.length ? { requirements } : {}), onAttempt, clientHint: getMcpClientHint() }).then((res) => {
+  const dispatchHandler = ({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, requirements }, extra, { onAttempt, onRoute } = {}) =>
+    dispatchFn({ task, taskType, cwd, mode, workflowStep, dispatchKey, attempt, parentExecutionId, rootExecutionId, timeoutS, waitMode, harness, profile, verify, isolation, label, output, fanout, writeScope, ...(requirements?.length ? { requirements } : {}), onAttempt, onRoute, clientHint: clientHintFromCtx(extra) }).then((res) => {
       // C1.2 origin mapping (best-effort, mapping-only): remember which
       // harness session this dispatch came from for a future wake-up bridge.
       recordDispatchOrigin({ jobId: res?.job?.jobId ?? res?.jobId, extra, harness: harness ?? null, env: process.env })
       return res
     })
-  taskTools.set('dispatch', { schema: z.object(dispatchInput), handler: dispatchHandler })
+  taskTools.set('dispatch', {
+    schema: z.object(dispatchInput),
+    handler: dispatchHandler,
+    track: (payload, hooks, args, ctx) => startTracking('dispatch', payload, hooks, args, ctx),
+    ok: (payload) => ok(payload, payload),
+    fail,
+  })
 
   register(
     'dispatch',
@@ -573,14 +663,15 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
         'waiting≠failure — act via jules_interact/job_reply, then observe again. ' +
         'An explicit mode wins over every routed chain step\'s own mode (reported as modeOverride: {requested, stepMode} when they differ); ' +
         'omit mode to let each chain step\'s declared mode apply (default read). ' +
-        'Prefer this over delegate(): it routes, retries and falls back. ' +
-        'Task-capable MCP clients may call it as a task and are notified when the job reaches a terminal state ' +
+        'Prefer this over delegate(): it routes, retries and falls back, and a job that starts and then fails on quota ' +
+        'continues on the next routed fallback (at most 3 reroutes; a write job from the partial changes the failed attempt left). ' +
+        'A client that declares the MCP tasks extension gets a task handle and is told when the job ends or fails ' +
         '(see docs/execution.md, "Job notifications over MCP").',
       inputSchema: dispatchInput,
       outputSchema: DispatchResponse,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(withChannel('dispatch', dispatchHandler))
+    guard(withTracking('dispatch', dispatchHandler))
   )
 
   register(
@@ -1289,7 +1380,7 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
   )
 
   if (withTasks) {
-    installTaskSupport(server, { tools: taskTools, env, readResultFn: deps.readResult, cancelJobFn: deps.cancelJob ?? cancelJob, pollMs: taskPollMs })
+    installTaskSupport(server, { tools: taskTools, supervisor, readResultFn: deps.readResult ?? readResult, env })
   }
 
   return server
@@ -1381,12 +1472,10 @@ async function main() {
   // Deliberately NOT startScheduler(): this MCP server is a per-session stdio
   // process, and the dashboard already runs the scheduler as the one
   // long-lived process. Two schedulers would double-fire every schedule.
-  const server = buildServer()
-  await server.connect(new StdioServerTransport())
-  // Best-effort: the handshake may complete after connect() resolves, but
-  // getMcpClientHint() also reads it live on every dispatch, so a miss here
-  // is harmless — this is just the earliest capture point.
-  captureClientHintFromServer(server)
+  // serveStdio serves 2026-07-28 clients (server/discover, per-request capabilities,
+  // tasks) and legacy 2025-era clients (initialize) from the same factory; one
+  // server instance is pinned per connection.
+  serveStdio(() => buildServer())
   log(`ready — state dir ${paths().home}`)
 }
 

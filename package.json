@@ -52,8 +52,11 @@
     "node": ">=20.19.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "better-sqlite3": "^11.10.0",
-    "zod": "3.25.76"
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0"
   }
 }

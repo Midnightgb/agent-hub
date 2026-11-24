@@ -4,7 +4,8 @@
 
 ```
 src/
-  index.mjs          MCP bootstrap (stdio) + --selftest/--version, tool registry
+  index.mjs          MCP bootstrap (serveStdio: 2026-07-28 + legacy) + --selftest/--version, tool registry
+  reroute.mjs        quota-after-start reroute helpers (partial work, task text)
   config.mjs         paths, TTLs, model registry, timeouts, breaker constants, sandbox config
   schemas.mjs        shared zod contracts (tool outputSchema + dashboard types); browser-safe
   eventlog.mjs       appendEvent() (one atomic append per line) / readTail()
@@ -62,6 +63,10 @@ src/
     adapters.mjs     console, file, webhook notification sinks
     watch.mjs        events.jsonl follower
     cli.mjs          `agent-hub watch` CLI
+    mcp-tasks.mjs    MCP tasks extension (2026-07-28): task handle + tasks/get for delegate/dispatch
+    mcp-supervisor.mjs follows a call's jobs; reroute after quota; feeds tasks and the channel
+    mcp-jobs.mjs     job watcher + notice shape
+    mcp-channel.mjs  opt-in Claude Code channel push (legacy connections)
   planner/
     plan.mjs         WorkflowPlanSchema, validatePlan, materializePlan
     decompose.mjs    decompose({ intent, runPlanner, routeFn, maxSteps })

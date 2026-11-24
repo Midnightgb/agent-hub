@@ -22,7 +22,7 @@ export const NodeSchema = z
     onFailure: z.any().optional(),
     verify: z.any().optional(),
     items: z.union([z.array(z.any()), z.string()]).optional(),
-    metadata: z.record(z.any()).optional(),
+    metadata: z.record(z.string(), z.any()).optional(),
     artifacts: z.array(z.string()).optional(),
     handoff: z.any().optional(),
   })
@@ -97,7 +97,7 @@ export const WorkflowSchema = z
     name: z.string().min(1),
     createdAt: z.string().default(() => new Date().toISOString()),
     nodes: z.array(NodeSchema).min(1, 'Workflow must contain at least one node'),
-    metadata: z.record(z.any()).optional(),
+    metadata: z.record(z.string(), z.any()).optional(),
   })
   .superRefine((wf, ctx) => {
     const nodeIds = new Set()

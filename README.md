@@ -73,7 +73,9 @@ Claude Code
 - **Capability-aware routing** — filters candidates by hard requirements and
   ranks them by quality, cost and latency preferences.
 - **Reliable execution** — retries, automatic fallback chains, per-class circuit
-  breakers, and timeouts that adapt to how long each agent and model actually takes.
+  breakers, and timeouts that adapt to how long each agent and model actually
+  takes. A `dispatch` job that starts and then hits a quota limit continues on
+  the next fallback, from the partial changes it left.
 - **Workflow orchestration** — DAGs with `dependsOn` and parallel waves; a step
   can run over a list and combine the results. Runs survive a crash and resume
   where they stopped.
@@ -87,7 +89,9 @@ Claude Code
   dashboard.
 - **Harness integration** — Claude Code, OpenCode and custom MCP clients get the
   waiting behaviour they expect, and a finished delegation can resume the session
-  that asked for it.
+  that asked for it. MCP clients that speak the tasks extension (Claude Code)
+  get a task handle and are told when a job ends or fails, without polling
+  ([details](docs/execution.md#job-notifications-over-mcp)).
 
 ## Architecture at a glance
 
@@ -296,6 +300,7 @@ subagents, the timeline, routing proposals, learnings and configuration.
 | `AGENT_HUB_HOME` | State directory (default `~/.local/share/agent-hub`). |
 | `AGENT_HUB_STORE` | Job read path: `json` (default), `sqlite`, or `shadow` (read JSON, verify against SQLite, log divergences). |
 | `AGENT_HUB_HARNESS` | Default caller harness: `generic`, `claude-code`, `opencode`. |
+| `AGENT_HUB_MCP_TASKS` / `AGENT_HUB_REROUTE` | `off` disables the MCP tasks extension / the reroute-after-quota of `dispatch` (both on by default). |
 | `AGENT_HUB_LIVE` | `1` enables the opt-in live test and benchmark paths. |
 | `AGENT_HUB_DISABLE_STARTUP_DISCOVERY` | `1` skips the background discovery pass at startup. |
 

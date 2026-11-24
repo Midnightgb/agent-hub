@@ -47,7 +47,9 @@ export function getOrigin(jobId, { env = process.env } = {}) {
  */
 export function harnessSessionIdFromExtra(extra) {
   if (!extra || typeof extra !== 'object') return null
-  const meta = extra._meta && typeof extra._meta === 'object' ? extra._meta : null
+  // SDK 1.x delivered _meta on the extra itself; SDK 2.x nests it under ctx.mcpReq.
+  const raw = extra._meta ?? extra.mcpReq?._meta
+  const meta = raw && typeof raw === 'object' ? raw : null
   return (
     extra.sessionId ??
     extra.harnessSessionId ??
