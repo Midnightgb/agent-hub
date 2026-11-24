@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFileSync } from 'node:child_process'
-import { InMemoryTransport } from '@modelcontextprotocol/server'
+import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 
 // The server reads AGENT_HUB_HOME at call time; set it before anything touches the store.
@@ -15,6 +15,8 @@ process.env.AGENT_HUB_DISABLE_STARTUP_DISCOVERY = '1'
 const { createJob, readResult, updateResult } = await import('../src/jobstore.mjs')
 const { buildServer } = await import('../src/index.mjs')
 const { preservePartialWork, buildRerouteTask, isQuotaFailure } = await import('../src/reroute.mjs')
+const { installTaskSupport } = await import('../src/notify/mcp-tasks.mjs')
+const { JobSupervisor } = await import('../src/notify/mcp-supervisor.mjs')
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const TASKS = 'io.modelcontextprotocol/tasks'
@@ -116,7 +118,7 @@ const CHAIN = [
 test('a 2026-07-28 client that declares the tasks extension gets a task handle for delegate and a completed result', async () => {
   const deps = {
     delegateTool: () => {
-      const job = fakeJob({ finish: { status: 'succeeded' } })
+      const job = fakeJob({ finish: { status: 'succeeded' }, afterMs: 600 })
       return { jobId: job.jobId, status: 'running', errorKind: null }
     },
   }
@@ -124,7 +126,7 @@ test('a 2026-07-28 client that declares the tasks extension gets a task handle f
   try {
     const started = Date.now()
     const res = await c.call('delegate', delegateArgs)
-    assert.ok(Date.now() - started < 50, 'the task handle comes back before the job ends')
+    assert.ok(Date.now() - started < 400, 'the task handle comes back before the job ends')
     assert.equal(res.result.resultType, 'task')
     assert.equal(res.result.status, 'working')
     assert.ok(res.result.taskId)
@@ -506,4 +508,114 @@ test('dispatch reports every start attempt through onAttempt and the unused fall
   const without = await dispatch({ task: 'attempts', taskType: 'triage', cwd: '/tmp/attempts-b', dispatchKey: 'attempts-b', ...route })
   assert.equal(without.job.jobId, withHook.job.jobId)
   assert.equal(without.candidate.agent, 'agy')
+})
+
+// ---- cancel during a reroute, reroute visible through the original job id -----
+
+test('tasks/cancel while the next attempt is starting also cancels that successor job', async () => {
+  const calls = []
+  const canceled = []
+  let restarting = false
+  // first attempt fails on quota at once; its successor would run for 5s
+  const base = fakeDispatchFactory({ chain: CHAIN, calls, outcomes: { 0: quota(), 1: { status: 'succeeded' } }, afterMs: 5000 })
+  const deps = {
+    dispatch: async (args) => {
+      // the reroute's dispatch takes a while (lock retries, preflight): the cancel lands inside that window
+      if (args.routeFn) {
+        restarting = true
+        await sleep(400)
+      }
+      const res = await base(args)
+      if (!args.routeFn) updateResult(res.job.jobId, quota())
+      return res
+    },
+    cancelJob: async (jobId) => {
+      canceled.push(jobId)
+      updateResult(jobId, { status: 'canceled' })
+      return readResult(jobId)
+    },
+  }
+  const c = await connect({ deps })
+  try {
+    const res = await c.call('dispatch', { task: 'build it', cwd: '/tmp', mode: 'write' })
+    await until(() => restarting)
+    const cancel = await c.request('tasks/cancel', { taskId: res.result.taskId })
+    assert.equal(cancel.result.resultType, 'complete')
+    // the successor job exists only after the restart returns; it must still be cancelled
+    await until(() => canceled.length === 2)
+    const successor = readResult(canceled[1])
+    assert.notEqual(canceled[1], res.result.taskId)
+    assert.equal(successor.agent, 'copilot')
+    assert.equal(successor.status, 'canceled')
+    assert.equal((await c.request('tasks/get', { taskId: res.result.taskId })).result.status, 'cancelled')
+    await sleep(100)
+    assert.equal(calls.length, 2, 'no third attempt after the cancel')
+  } finally {
+    await c.close()
+  }
+})
+
+test('a legacy client polling the original job id sees the reroute: running while the chain runs, then the last attempt, with reroutedTo', async () => {
+  const calls = []
+  const deps = { dispatch: fakeDispatchFactory({ chain: CHAIN, calls, outcomes: { 0: quota(), 1: { status: 'succeeded' } }, afterMs: 200 }) }
+  const c = await connect({ deps, era: '2025' })
+  try {
+    const res = await c.call('dispatch', { task: 'build it', cwd: '/tmp', mode: 'write' })
+    const originalId = JSON.parse(res.result.content[0].text).job.jobId
+    const status = async () => JSON.parse((await c.call('job_status', { jobId: originalId })).result.content[0].text)
+
+    // the first attempt has failed on quota, the successor is running: never reads as failed
+    const midChain = await until(async () => {
+      const v = await status()
+      return v.reroutedTo && v.status === 'running' ? v : null
+    })
+    assert.equal(midChain.rerouting, true)
+    assert.equal(midChain.finalJobId, midChain.reroutedTo)
+    assert.equal(midChain.errorKind, null)
+
+    // job_wait on the original id returns when the whole chain ends
+    const waited = JSON.parse((await c.call('job_wait', { jobId: originalId, timeoutS: 10 })).result.content[0].text)
+    assert.equal(waited.done, true)
+    assert.equal(waited.status, 'succeeded')
+    assert.equal(waited.reroutedTo, midChain.reroutedTo)
+    assert.equal(waited.rerouting, false)
+    assert.equal(waited.jobId, originalId)
+
+    // job_result answers with the last attempt's outcome
+    const result = JSON.parse((await c.call('job_result', { jobId: originalId })).result.content[0].text)
+    assert.equal(result.status, 'succeeded')
+    assert.equal(result.finalJobId, midChain.reroutedTo)
+
+    // the successor's own view is a plain job (nothing rerouted from it)
+    const own = JSON.parse((await c.call('job_status', { jobId: midChain.reroutedTo })).result.content[0].text)
+    assert.equal('reroutedTo' in own, false)
+  } finally {
+    await c.close()
+  }
+})
+
+test('a job that never rerouted has the exact historical job_status shape', async () => {
+  const job = fakeJob({ finish: quota(), afterMs: 5 })
+  await sleep(40)
+  const c = await connect({ era: '2025' })
+  try {
+    const view = JSON.parse((await c.call('job_status', { jobId: job.jobId })).result.content[0].text)
+    assert.equal(view.status, 'failed')
+    assert.equal(view.errorKind, 'quota')
+    for (const key of ['reroutedTo', 'finalJobId', 'rerouting']) assert.equal(key in view, false, key)
+  } finally {
+    await c.close()
+  }
+})
+
+// ---- the SDK hook the task support depends on --------------------------------
+
+test('the SDK still exposes the request-handler hook that task support wraps (fails loudly if a bump removes it)', () => {
+  const mcp = new McpServer({ name: 'probe', version: '1' }, { capabilities: { extensions: { [TASKS]: {} } } })
+  mcp.registerTool('noop', { description: 'x' }, async () => ({ content: [] }))
+  assert.equal(typeof mcp.server._getRequestHandler, 'function', 'Server._getRequestHandler is gone: the tasks wrapper cannot be installed')
+  assert.equal(typeof mcp.server._getRequestHandler('tools/call'), 'function')
+  const supervisor = new JobSupervisor({ cancelJobFn: async () => {} })
+  assert.equal(installTaskSupport(mcp, { tools: new Map(), supervisor, readResultFn: readResult }), true)
+  // and the real server wires it: a 2026 client with the extension gets a task, so it returned true there too
 })

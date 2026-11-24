@@ -77,3 +77,35 @@ export function buildRerouteTask({ task, previous, partial }) {
   }
   return `${task}${lines.join('\n')}`
 }
+
+const MAX_CHAIN_HOPS = 10
+
+/**
+ * A job that was rerouted after quota is not the end of its dispatch: the
+ * supervisor marks it with `reroutePending` while the next attempt starts and
+ * `reroutedTo` once it runs. Read-side views (job_status, job_wait, job_result,
+ * job_cancel) call this to report the dispatch's outcome through the original
+ * job id. Returns null for a job that never rerouted, so its view is unchanged.
+ */
+export function rerouteOverlay(record, readResultFn, env = process.env, depth = 0) {
+  if (!record || (!record.reroutedTo && !record.reroutePending)) return null
+  const pending = { status: 'running', errorKind: null, error: null, updatedAt: record.updatedAt, reroutedTo: record.reroutedTo ?? null, finalJobId: null, tail: null }
+  if (!record.reroutedTo || depth >= MAX_CHAIN_HOPS) return pending
+  let next
+  try {
+    next = readResultFn(record.reroutedTo, env)
+  } catch {
+    return pending
+  }
+  const deeper = rerouteOverlay(next, readResultFn, env, depth + 1)
+  if (deeper) return { ...deeper, reroutedTo: record.reroutedTo }
+  return {
+    status: next.status,
+    errorKind: next.errorKind ?? null,
+    error: next.error ?? null,
+    updatedAt: next.updatedAt ?? record.updatedAt,
+    reroutedTo: record.reroutedTo,
+    finalJobId: next.jobId,
+    tail: next,
+  }
+}

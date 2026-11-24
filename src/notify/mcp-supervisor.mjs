@@ -10,7 +10,7 @@
  * lives in this server process only; nothing is written to events.jsonl.
  */
 import { watchJobUntilTerminal, buildJobNotice, noticeText, mergeAttempts } from './mcp-jobs.mjs'
-import { readResult as defaultReadResult } from '../jobstore.mjs'
+import { readResult as defaultReadResult, updateResult } from '../jobstore.mjs'
 import { isQuotaFailure, buildRerouteTask, preservePartialWork } from '../reroute.mjs'
 
 const RESTART_LOCK_RETRIES = 6
@@ -105,7 +105,21 @@ export class JobSupervisor {
       const canReroute = reroute && !tracker.cancelled && tracker.reroutes < reroute.maxReroutes && remaining.length > 0 && isQuotaFailure(record)
       if (canReroute) {
         const next = remaining.shift()
-        const started = await this.#restart(reroute, { next, remaining, previous: record })
+        // Read-side views report this job as still going while the next attempt starts.
+        this.#mark(record.jobId, { reroutePending: true })
+        const started = await this.#restart(reroute, { next, remaining, previous: record }, () => tracker.cancelled)
+        if (started.ok) this.#mark(record.jobId, { reroutePending: false, reroutedTo: started.jobId })
+        else this.#mark(record.jobId, { reroutePending: false })
+        if (tracker.cancelled) {
+          // tasks/cancel landed while the successor was starting: it was not running yet
+          // when cancel() stopped the old job, so stop it here (and free its write lock).
+          if (started.ok) {
+            try {
+              await this.cancelJobFn?.(started.jobId, { env: this.env })
+            } catch {}
+          }
+          return
+        }
         if (started.ok) {
           tracker.reroutes += 1
           tracker.currentJobId = started.jobId
@@ -125,11 +139,12 @@ export class JobSupervisor {
     }
   }
 
-  async #restart(reroute, { next, remaining, previous }) {
+  async #restart(reroute, { next, remaining, previous }, isCancelled = () => false) {
     const partial = await preservePartialWork(previous, { env: this.env })
     const task = buildRerouteTask({ task: reroute.task, previous, partial })
     let lastError = null
     for (let i = 0; i < RESTART_LOCK_RETRIES; i++) {
+      if (isCancelled()) return { ok: false, attempts: [], errorKind: 'canceled', error: 'cancelled before the next attempt started' }
       try {
         const res = await reroute.restart({ candidate: next, remaining, task, previous })
         return { ok: true, ...res }
@@ -141,6 +156,12 @@ export class JobSupervisor {
       }
     }
     return { ok: false, attempts: lastError?.attempts ?? [], errorKind: lastError?.errorKind ?? 'crash', error: String(lastError?.message ?? lastError) }
+  }
+
+  #mark(jobId, patch) {
+    try {
+      updateResult(jobId, patch, this.env)
+    } catch {}
   }
 
   #finish(tracker, record) {

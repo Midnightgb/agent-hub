@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import { parseReviewOutput } from '../review-output.mjs'
 import { startJob as defaultStartJob, cancelJob } from '../jobrunner.mjs'
 import { readResult, responsePath } from '../jobstore.mjs'
+import { rerouteOverlay } from '../reroute.mjs'
 import { WRITE_ALLOWLIST, TURN_DEPTH_WARNING } from '../config.mjs'
 import { TASK_TYPES } from '../schemas.mjs'
 import { keyForJob, NO_KEY_MESSAGE } from '../cloud/credentials.mjs'
@@ -22,7 +23,29 @@ function assertTaskType(taskType) {
   }
 }
 
+/**
+ * A job rerouted after quota reports its dispatch's outcome: status, errorKind and
+ * error come from the last attempt (non-terminal while the chain runs), plus
+ * `reroutedTo` (the successor) and `finalJobId`. A job that never rerouted is
+ * returned as is.
+ */
+function withRerouteOverlay(result, env = process.env) {
+  const overlay = rerouteOverlay(result, readResult, env)
+  if (!overlay) return result
+  return {
+    ...result,
+    status: overlay.status,
+    errorKind: overlay.errorKind,
+    error: overlay.error,
+    updatedAt: overlay.updatedAt,
+    reroutedTo: overlay.reroutedTo,
+    finalJobId: overlay.finalJobId,
+    rerouting: overlay.finalJobId == null || !TERMINAL_STATUSES.has(overlay.status),
+  }
+}
+
 function jobStatusView(result) {
+  result = withRerouteOverlay(result)
   return {
     jobId: result.jobId,
     agent: result.agent,
@@ -38,6 +61,7 @@ function jobStatusView(result) {
     // D2 (agy-hub-verification): hub-run verification result, present only
     // when the job was given a `verify` array (docs/verification.md).
     verification: result.verification ?? null,
+    ...(result.reroutedTo !== undefined ? { reroutedTo: result.reroutedTo, finalJobId: result.finalJobId, rerouting: result.rerouting } : {}),
     ...readIsolationView(result),
     ...scratchWriteView(result),
   }
@@ -400,7 +424,7 @@ async function jobWaitManyTool({ jobIds, until = 'all', timeoutS = 30 }) {
   const boundedTimeoutS = Math.min(Math.max(timeoutS, 1), 60)
   const deadline = Date.now() + boundedTimeoutS * 1000
   while (true) {
-    const results = jobIds.map((id) => readResult(id))
+    const results = jobIds.map((id) => withRerouteOverlay(readResult(id)))
     const completed = results.filter(isWaitDone).map((r) => r.jobId)
     const pending = results.filter((r) => !isWaitDone(r)).map((r) => r.jobId)
     const satisfied = until === 'any' ? completed.length > 0 : pending.length === 0
@@ -424,7 +448,7 @@ export async function jobWaitTool({ jobId, jobIds, until, timeoutS = 30 }) {
   if (many) return jobWaitManyTool({ jobIds, until, timeoutS })
   const boundedTimeoutS = Math.min(Math.max(timeoutS, 1), 60)
   const deadline = Date.now() + boundedTimeoutS * 1000
-  let result = readResult(jobId)
+  let result = withRerouteOverlay(readResult(jobId))
   while (true) {
     if (TERMINAL_STATUSES.has(result.status)) {
       return { ...jobStatusView(result), done: true, waiting: false, timedOut: false }
@@ -442,7 +466,7 @@ export async function jobWaitTool({ jobId, jobIds, until, timeoutS = 30 }) {
       return { ...jobStatusView(result), done: false, waiting: false, timedOut: true }
     }
     await new Promise((r) => setTimeout(r, 300))
-    result = readResult(jobId)
+    result = withRerouteOverlay(readResult(jobId))
   }
 }
 
@@ -450,8 +474,12 @@ export function jobStatusTool({ jobId }) {
   return jobStatusView(readResult(jobId))
 }
 
-export function jobResultTool({ jobId, maxLines = 20, tailLines = 10 }) {
-  const result = readResult(jobId)
+export function jobResultTool({ jobId: requestedJobId, maxLines = 20, tailLines = 10 }) {
+  // A job rerouted after quota answers with the last attempt's response; the
+  // original id stays the handle (reroutedTo/finalJobId say where it went).
+  const original = withRerouteOverlay(readResult(requestedJobId))
+  const jobId = original.finalJobId ?? requestedJobId
+  const result = jobId === requestedJobId ? original : { ...readResult(jobId), reroutedTo: original.reroutedTo, finalJobId: original.finalJobId }
   let fullText = ''
   try {
     fullText = fs.readFileSync(responsePath(jobId), 'utf8')
@@ -481,6 +509,7 @@ export function jobResultTool({ jobId, maxLines = 20, tailLines = 10 }) {
     status: result.status,
     errorKind: result.errorKind ?? null,
     verification: result.verification ?? null,
+    ...(original.reroutedTo !== undefined ? { reroutedTo: original.reroutedTo, finalJobId: original.finalJobId, rerouting: original.rerouting } : {}),
     ...readIsolationView(result),
     ...scratchWriteView(result),
     ...reviewView(result, fullText),
@@ -499,6 +528,9 @@ function reviewView(result, fullText) {
 }
 
 export async function jobCancelTool({ jobId }) {
-  const result = await cancelJob(jobId)
-  return jobStatusView(result)
+  // Cancelling a rerouted job cancels the attempt that is running now.
+  const overlay = rerouteOverlay(readResult(jobId), readResult)
+  const target = overlay?.finalJobId && !TERMINAL_STATUSES.has(overlay.status) ? overlay.finalJobId : jobId
+  const result = await cancelJob(target)
+  return jobStatusView(target === jobId ? result : readResult(jobId))
 }

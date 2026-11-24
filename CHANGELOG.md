@@ -63,7 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   times, with the same lineage. A write job's next attempt starts from the
   partial changes the failed one left (a scoped writer's saved patch is applied
   first) and is told to review `git status`/`git diff`. Other failures behave as
-  before. `AGENT_HUB_REROUTE=off` / `AGENT_HUB_REROUTE_MAX=<n>`.
+  before. `AGENT_HUB_REROUTE=off` / `AGENT_HUB_REROUTE_MAX=<n>`. A rerouted job
+  reports the dispatch's outcome through its own id (`job_status`/`job_wait`/
+  `job_result` add `reroutedTo`, `finalJobId`, `rerouting`; `job_cancel` cancels
+  the running attempt); jobs that never reroute are unchanged.
 - Opt-in Claude Code channel (`AGENT_HUB_CHANNEL=1`) for legacy connections: one
   `<channel>` event when a job started by `delegate`/`dispatch` ends.
 - `dispatch` takes `onAttempt` and `onRoute` observation hooks; the `delegate`
@@ -142,7 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - MCP SDK 1.x -> 2.x: `@modelcontextprotocol/sdk` is replaced by
-  `@modelcontextprotocol/server` ^2.4.0 (`@modelcontextprotocol/client` for tests)
+  `@modelcontextprotocol/server` ~2.4.0, pinned to the minor because task support wraps an underscored SDK hook (`@modelcontextprotocol/client` for tests)
   and `zod` 3.25 -> ^4.2. The stdio entry is `serveStdio`, which serves 2026-07-28
   clients (`server/discover`, per-request capabilities) and legacy 2025-era
   clients (`initialize`) from the same server factory. Tool names, inputs and

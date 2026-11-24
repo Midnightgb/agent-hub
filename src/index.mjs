@@ -1168,7 +1168,7 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
         'Validate a WorkflowPlan, materialize it and run it. REQUIRES approve:true — review the plan first (plan_task). ' +
         'Never executes an invalid plan and never partially executes.',
       inputSchema: {
-        plan: z.any().describe('The WorkflowPlan to execute.'),
+        plan: z.any().optional().describe('The WorkflowPlan to execute.'),
         approve: z.boolean().describe('Must be true; confirms the plan was reviewed.'),
       },
     },

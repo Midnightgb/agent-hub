@@ -148,7 +148,14 @@ text gets a note naming the failed attempt and telling the agent to run
 `git status`/`git diff` and continue from there. Read jobs rerun unchanged. Any
 other `errorKind` ends the dispatch as before. Rerouting applies to every
 `dispatch` MCP call, with or without a task; the attempts and why each ended
-(`attempts[]`, `reroutes`) are in the notice. Only an MCP `dispatch` call reroutes:
+(`attempts[]`, `reroutes`) are in the notice. A client that does not use tasks
+sees the reroute through the original job id: `job_status`/`job_wait`/`job_result`
+report the last attempt (`status` stays `running` while the chain runs) plus
+`reroutedTo` (the successor), `finalJobId` and `rerouting`, and `job_cancel`
+cancels the attempt that is running; a job that never rerouted has none of those
+keys. (There is a window of up to one poll, about 0.5s, between the first job
+turning `failed` and the hub marking it as rerouting.) `tasks/cancel` during a
+reroute also stops the successor. Only an MCP `dispatch` call reroutes:
 the workflow engine and direct `dispatch()` callers keep their own retry policy.
 
 **Claude Code channel** (opt in, `AGENT_HUB_CHANNEL=1`), for legacy 2025-era
