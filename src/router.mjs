@@ -42,8 +42,10 @@ export const DELEGATION_MAP = {
     why: 'needs multi-hop reasoning, 1M ctx',
     chain: [
       { agent: 'agy', model: 'gemini-3.8-flash-high', mode: 'read' },
-      { agent: 'opencode', model: '@go', mode: 'read' },
+      // Free before Go: the Go subscription is a paid quota, so it is only
+      // spent once the allowed free models are exhausted.
       { agent: 'opencode', model: '@free', mode: 'read' },
+      { agent: 'opencode', model: '@go', mode: 'read' },
       { agent: 'claude', model: 'sonnet' },
     ],
   },

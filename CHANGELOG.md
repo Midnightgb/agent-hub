@@ -133,9 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   all been retired from the catalog. `route()` expands a pool to the allowed models the
   live catalog lists (at most 2) and skips an empty one as `pool_empty`; a blocked concrete
   opencode step is skipped as `model_blocked`. `mechanical-edit` now uses an allowed Go
-  model instead of `deepseek/deepseek-v4-flash`.
+  model instead of `deepseek/deepseek-v4-flash`; `call-chain-trace` tries `@free` before `@go`.
 - A job on an opencode model the policy does not allow is rejected before launch with
-  `code: model_blocked`.
+  `code: model_blocked`. The same applies to `gentle-shell` on an `opencode-go/*` model
+  (it spends the same opencode Go quota), judged by the opencode decision for that model.
 - `dispatch`: an explicit `mode` now wins over the routed chain step's own
   mode on every step (adaptive timeout, `startJob`, per-cwd write-lock
   reservation, `writeScope` forwarding). When they differ the response carries

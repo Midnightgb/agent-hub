@@ -42,7 +42,7 @@ test('A1: every opencode step in DELEGATION_MAP names a pool, never a model id',
   assert.ok(models.length > 0)
   for (const model of models) assert.match(model, /^@(free|go)$/)
   assert.deepEqual(opencodeSteps(DELEGATION_MAP.recon.chain).map((c) => c.model), ['@free'])
-  assert.deepEqual(opencodeSteps(DELEGATION_MAP['call-chain-trace'].chain).map((c) => c.model), ['@go', '@free'])
+  assert.deepEqual(opencodeSteps(DELEGATION_MAP['call-chain-trace'].chain).map((c) => c.model), ['@free', '@go'])
   assert.deepEqual(opencodeSteps(DELEGATION_MAP['mechanical-edit'].chain).map((c) => ({ model: c.model, mode: c.mode })), [{ model: '@go', mode: 'write' }])
 })
 
@@ -56,6 +56,16 @@ test('S2: route expands @free to allowed catalog models in policy order, keeping
   assert.deepEqual(pick(result.primary), { agent: 'opencode', model: 'opencode/nemotron-3.5-super-vl-free', mode: 'read', pool: 'free' })
   assert.deepEqual(result.fallbacks.map((c) => `${c.agent}:${c.model}`), ['opencode:opencode/glm-5.3-flash-free', 'agy:gemini-3.8-flash-medium'])
   assert.equal(result.skipped.length, 0)
+})
+
+test('S2 (A1 rejected for call-chain-trace): route tries the free pool before the go pool', async () => {
+  const home = homeWithCatalog(CATALOG)
+  const env = { AGENT_HUB_HOME: home }
+  const { route, setModelDecision } = await fresh(home)
+  setModelDecision({ agent: 'opencode', model: 'opencode-go/kimi-k3', allowed: true, env })
+  const result = await route({ taskType: 'call-chain-trace', env })
+  const pools = [result.primary, ...result.fallbacks].filter((c) => c.agent === 'opencode').map((c) => c.pool)
+  assert.deepEqual(pools, ['free', 'free', 'go'])
 })
 
 test('S2/S4: a pool with no allowed model is skipped as pool_empty and the chain falls through', async () => {

@@ -20,6 +20,24 @@ import { catalogTier } from './catalog.mjs'
 
 export const POLICY_AGENTS = Object.freeze(['opencode'])
 export const POOLS = Object.freeze(['free', 'go'])
+
+/**
+ * Agents that are not policy agents themselves but run some models on a
+ * policy agent's quota: gentle-shell (pi) with an `opencode-go/*` model
+ * spends the same opencode Go subscription (quota/mapping.mjs), so the
+ * opencode decision for that model id governs it too.
+ */
+const SHARED_QUOTA_MODELS = Object.freeze({
+  'gentle-shell': Object.freeze({ policyAgent: 'opencode', prefix: 'opencode-go/' }),
+})
+
+/** The policy agent whose decisions govern agent:model, or null when the policy does not cover it. */
+export function policyAgentFor(agent, model) {
+  if (POLICY_AGENTS.includes(agent)) return agent
+  const shared = SHARED_QUOTA_MODELS[agent]
+  if (shared && typeof model === 'string' && model.startsWith(shared.prefix)) return shared.policyAgent
+  return null
+}
 export const DEFAULT_POOL_LIMIT = 2
 
 /** A chain step model that names a pool instead of a model id. */
@@ -78,16 +96,19 @@ export function modelPool(entry) {
 
 /**
  * { allowed, source, pool } for one agent:model. source is 'user' (a
- * dashboard decision), 'default' (S4 rule) or 'not_applicable' (an agent the
- * policy does not cover, always allowed).
+ * dashboard decision), 'default' (S4 rule) or 'not_applicable' (an
+ * agent:model the policy does not cover, always allowed). A model that runs on
+ * a policy agent's quota (policyAgentFor) is judged by that agent's catalog
+ * and decisions.
  */
 export function modelDecision({ agent, model, env = process.env, discovery = readDiscoveryFile(env), policy = readModelPolicy(env) }) {
-  if (!POLICY_AGENTS.includes(agent)) return { allowed: true, source: 'not_applicable', pool: null }
+  const policyAgent = policyAgentFor(agent, model)
+  if (!policyAgent) return { allowed: true, source: 'not_applicable', pool: null }
   // A `model#variant` id (opencode reasoning variants) is judged by its base model.
   const base = typeof model === 'string' ? model.split('#')[0] : model
-  const entry = catalogModels(discovery, agent).find((m) => m.id === base) ?? null
+  const entry = catalogModels(discovery, policyAgent).find((m) => m.id === base) ?? null
   const pool = entry ? modelPool(entry) : 'unknown'
-  const decision = agentPolicy(policy, agent).decisions[base]
+  const decision = agentPolicy(policy, policyAgent).decisions[base]
   if (typeof decision?.allowed === 'boolean') return { allowed: decision.allowed, source: 'user', pool }
   return { allowed: pool === 'free', source: 'default', pool }
 }
@@ -102,7 +123,7 @@ export function assertModelAllowed({ agent, model, env = process.env, discovery 
   if (allowed) return
   const why = source === 'user' ? 'blocked in the dashboard' : pool === 'unknown' ? 'not listed by the current catalog' : `${pool} models are blocked until allowed`
   const error = new Error(
-    `${agent} model "${model}" is blocked by the model policy (${why}); allow it in the dashboard (Agents → ${agent}) or use an allowed model`
+    `${agent} model "${model}" is blocked by the model policy (${why}); allow it in the dashboard (Agents → ${policyAgentFor(agent, model)}) or use an allowed model`
   )
   error.code = 'model_blocked'
   throw error
@@ -143,13 +164,13 @@ export function expandPool({ agent, pool, env = process.env, discovery = readDis
  * repeated. Other steps are returned unchanged.
  */
 export function expandChain(chain, { env = process.env, discovery = readDiscoveryFile(env), policy = readModelPolicy(env) } = {}) {
-  if (!chain.some((step) => POLICY_AGENTS.includes(step?.agent))) return { chain, emptyPools: [] }
+  if (!chain.some((step) => policyAgentFor(step?.agent, step?.model))) return { chain, emptyPools: [] }
   const out = []
   const emptyPools = []
   const seen = new Set()
   for (const step of chain) {
     if (!isPoolModel(step?.model)) {
-      if (POLICY_AGENTS.includes(step.agent) && !modelDecision({ agent: step.agent, model: step.model, env, discovery, policy }).allowed) {
+      if (policyAgentFor(step.agent, step.model) && !modelDecision({ agent: step.agent, model: step.model, env, discovery, policy }).allowed) {
         emptyPools.push({ agent: step.agent, model: step.model, reason: 'model_blocked' })
         continue
       }

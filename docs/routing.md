@@ -40,7 +40,7 @@ passes availability filtering, plus the rest as fallbacks:
 | Task type | Primary | Fallbacks | Why |
 |---|---|---|---|
 | `recon` | agy gemini-3.8-flash-low | opencode `@free` → claude haiku | proven context compression, cheap refreshable quota |
-| `call-chain-trace` | agy gemini-3.8-flash-high | opencode `@go` → opencode `@free` → claude sonnet | needs multi-hop reasoning, 1M ctx |
+| `call-chain-trace` | agy gemini-3.8-flash-high | opencode `@free` → opencode `@go` → claude sonnet | needs multi-hop reasoning, 1M ctx |
 | `research` | opencode `@free` (up to 2 models) | agy gemini-3.8-flash-medium | zero cost, 1M ctx |
 | `triage` | opencode `@free` | copilot auto → codex default | lowest latency |
 | `second-opinion` | agy gemini-3.8-flash-high | copilot auto | different model lineage than Claude Code |
@@ -54,7 +54,11 @@ passes availability filtering, plus the rest as fallbacks:
 `@free` and `@go` are opencode **pools**, not model ids: `route()` expands each one to the
 models the user allowed in the dashboard (`model-policy.json`), in the user's order, at most 2.
 An empty pool is skipped as `pool_empty`; a concrete opencode step the policy blocks (for
-example one appended by an accepted proposal) is skipped as `model_blocked`. See
+example one appended by an accepted proposal) is skipped as `model_blocked`. `call-chain-trace`
+tries `@free` before `@go` so the Go subscription is only spent once the allowed free models are
+exhausted. The same policy gates `gentle-shell` when its model is `opencode-go/*` (it spends the
+same opencode Go quota): such a job is rejected before launch with `code: model_blocked` unless
+that model is allowed for opencode in the dashboard. See
 [providers/opencode.md](providers/opencode.md#models-the-dashboard-decides-model-policy).
 | `ui-test` | agy gemini-3.8-flash-high | agy claude-sonnet-4-6 | requires `browser`; drives a Playwright MCP server ([setup](providers/agy.md#browser--ui-testing-ui-test)) |
 

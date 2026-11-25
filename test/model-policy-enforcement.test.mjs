@@ -105,6 +105,47 @@ test('A3: agents other than opencode are not checked against the policy', async 
   assert.equal(jobstore.readResult(job.jobId, env).status, 'succeeded')
 })
 
+test('merge-open-prs S2: gentle-shell on a disallowed opencode-go model is rejected before launch', async () => {
+  const home = tmpHome()
+  const env = { AGENT_HUB_HOME: home }
+  const { startJob, tools } = await fresh(home)
+  for (const model of ['opencode-go/kimi-k3', 'opencode-go/x']) {
+    assert.throws(
+      () => start(startJob, { agent: 'gentle-shell', model, env }),
+      (error) => {
+        assert.equal(error.code, 'model_blocked')
+        assert.match(error.message, new RegExp(`gentle-shell model "${model.replace('/', '\\/')}" is blocked by the model policy`))
+        assert.match(error.message, /dashboard \(Agents → opencode\)/)
+        return true
+      }
+    )
+  }
+  assert.throws(
+    () => tools.delegateTool({ agent: 'gentle-shell', model: 'opencode-go/kimi-k3', task: 't', cwd: os.tmpdir(), env }),
+    { code: 'model_blocked' }
+  )
+  assert.deepEqual(runDirs(home), [])
+})
+
+test('merge-open-prs S2: gentle-shell follows the opencode decision for an opencode-go model', async () => {
+  const home = tmpHome()
+  const env = { AGENT_HUB_HOME: home }
+  const { startJob, setModelDecision, jobstore } = await fresh(home)
+  setModelDecision({ agent: 'opencode', model: 'opencode-go/kimi-k3', allowed: true, env })
+  const { job, done } = start(startJob, { agent: 'gentle-shell', model: 'opencode-go/kimi-k3', env })
+  await done
+  assert.equal(jobstore.readResult(job.jobId, env).status, 'succeeded')
+})
+
+test('merge-open-prs S2: gentle-shell on a non-opencode-go model is not checked against the policy', async () => {
+  const home = tmpHome()
+  const env = { AGENT_HUB_HOME: home }
+  const { startJob, jobstore } = await fresh(home)
+  const { job, done } = start(startJob, { agent: 'gentle-shell', model: 'anthropic/claude-sonnet-5-5', env })
+  await done
+  assert.equal(jobstore.readResult(job.jobId, env).status, 'succeeded')
+})
+
 test('S3: delegate surfaces the block as an error naming the model', async () => {
   const home = tmpHome()
   const env = { AGENT_HUB_HOME: home }
