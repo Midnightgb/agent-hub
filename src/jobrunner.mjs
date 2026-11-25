@@ -108,6 +108,80 @@ function appendWarning(jobId, warning, env) {
   updateResult(jobId, (current) => ({ warnings: [...(current.warnings ?? []), warning] }), env)
 }
 
+// Directories a read job's tools write as evidence (Playwright MCP screenshots
+// and page snapshots). Their files are copied out of the scratch copy before it
+// is removed, so a ui-test keeps its screenshots without running in place.
+const SCRATCH_ARTIFACT_DIRS = Object.freeze(['.playwright-mcp'])
+
+/**
+ * Regular files under `dir` (relative to `root`, posix separators), walked
+ * directly on disk. Symlinks are never followed. A missing dir yields [].
+ */
+function listRegularFiles(root, dir) {
+  const found = []
+  const walk = (rel) => {
+    let entries
+    try {
+      entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const child = `${rel}/${entry.name}`
+      if (entry.isDirectory()) walk(child)
+      else if (entry.isFile()) found.push(child)
+    }
+  }
+  walk(dir)
+  return found
+}
+
+/** True when `rel` exists in the caller's tree with the same bytes as in the scratch copy. */
+function unchangedFromOriginal(originalCwd, scratchCwd, rel) {
+  if (!originalCwd) return false
+  try {
+    return fs.readFileSync(path.join(originalCwd, rel)).equals(fs.readFileSync(path.join(scratchCwd, rel)))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Copy the files the job wrote under SCRATCH_ARTIFACT_DIRS into
+ * runs/<jobId>/artifacts/, keeping their relative paths. Returns the saved
+ * absolute paths. Never throws: a failed copy becomes a warning on the job.
+ *
+ * Candidates are the snapshot diff's paths plus a direct walk of each artifact
+ * dir: the snapshot runs `git status --ignored=no`, so a gitignored
+ * `.playwright-mcp/` (or a truncated snapshot) would otherwise lose every
+ * screenshot. Walked files identical to the caller's tree were not written by
+ * the job and are skipped; a diff path the job deleted is skipped silently.
+ */
+function keepScratchArtifacts({ jobId, scratchCwd, originalCwd, paths, env }) {
+  const artifactsDir = path.join(path.dirname(stdoutPath(jobId, env)), 'artifacts')
+  const inArtifactDir = (rel) => SCRATCH_ARTIFACT_DIRS.some((dir) => rel.startsWith(dir + '/'))
+  const fromDiff = paths.filter(inArtifactDir)
+  const walked = SCRATCH_ARTIFACT_DIRS.flatMap((dir) => listRegularFiles(scratchCwd, dir)).filter(
+    (rel) => !fromDiff.includes(rel) && !unchangedFromOriginal(originalCwd, scratchCwd, rel)
+  )
+  const saved = []
+  for (const rel of [...fromDiff, ...walked].sort()) {
+    const source = path.join(scratchCwd, rel)
+    const target = path.join(artifactsDir, rel)
+    if (!target.startsWith(artifactsDir + path.sep)) continue
+    try {
+      const stat = fs.lstatSync(source, { throwIfNoEntry: false })
+      if (!stat?.isFile()) continue
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(source, target)
+      saved.push(target)
+    } catch (error) {
+      appendWarning(jobId, `could not keep artifact ${rel}: ${error.message}`, env)
+    }
+  }
+  return saved
+}
+
 function formatChangedPaths(diff) {
   const shown = diff.paths.slice(0, 10)
   const list = shown.join(', ') + (diff.paths.length > 10 ? ', …' : '')
@@ -808,7 +882,9 @@ async function finishJob({
   }
   if (scratch && scratchSnapshot) {
     const scratchDiff = diffSnapshotsFn(scratchSnapshot, takeSnapshotFn(scratch.cwd, { env }))
-    updateResult(jobId, (cur) => ({ isolation: { ...(cur.isolation ?? {}), discardedPaths: scratchDiff.changed ? scratchDiff.paths : [] } }), env)
+    const discardedPaths = scratchDiff.changed ? scratchDiff.paths : []
+    const artifacts = keepScratchArtifacts({ jobId, scratchCwd: scratch.cwd, originalCwd: cwd, paths: discardedPaths, env })
+    updateResult(jobId, (cur) => ({ isolation: { ...(cur.isolation ?? {}), discardedPaths, artifacts } }), env)
   }
 
   // scratch-writers (S2, S4): runs while the copy still exists. The agent's
