@@ -27,7 +27,7 @@ import { installTaskSupport, tasksEnabled, TASKS_CAPABILITIES } from './notify/m
 import { channelEnabled, pushChannelNotice, CHANNEL_CAPABILITY, CHANNEL_INSTRUCTIONS } from './notify/mcp-channel.mjs'
 import { JobSupervisor } from './notify/mcp-supervisor.mjs'
 import { rerouteEnabled, maxReroutes } from './reroute.mjs'
-import { jobIdOf } from './notify/mcp-jobs.mjs'
+import { jobIdOf, isTerminalStatus } from './notify/mcp-jobs.mjs'
 import { recordDispatchOrigin } from './harness/origin.mjs'
 import { clientHintForName, getClientHint, setClientHint } from './harness/registry.mjs'
 import {
@@ -515,17 +515,19 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
     }
   }
 
-  const startTracking = (tool, payload, hooks, args, ctx) => {
+  const startTracking = (tool, payload, hooks, args, ctx, { allowReroute = true } = {}) => {
     const jobId = jobIdOf(payload)
     if (!jobId) return null
     return supervisor.start({
       tool,
       jobId,
       attempts: hooks.attempts,
-      reroute: tool === 'dispatch' ? rerouteSpec(args, hooks, ctx) : null,
+      reroute: tool === 'dispatch' && allowReroute ? rerouteSpec(args, hooks, ctx) : null,
       onTerminal: channelOnly ? (tracker) => void pushChannelNotice(server, tracker.notice) : null,
     })
   }
+
+  const payloadIsTerminal = (payload) => isTerminalStatus(payload?.wait?.status) || isTerminalStatus(payload?.job?.status ?? payload?.status)
 
   // Plain (non-task) calls keep their exact result; when a notice or a reroute
   // can apply, the supervisor follows the job in the background.
@@ -537,8 +539,14 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
         hooks.route = r
       },
     })
-    const wantsReroute = tool === 'dispatch' && rerouteOn && hooks.route?.remaining?.length > 0
-    if (channelOnly || wantsReroute) startTracking(tool, payload, hooks, args, ctx)
+    // A payload that already carries the job's terminal outcome (dispatch waited:
+    // waitMode attention/terminal) is final for the caller, who may now fall back
+    // on its own. Rerouting it would flip a failure the caller saw back to running
+    // and start a second dispatch next to the caller's, so such a job is only
+    // followed for the notice, never rerouted.
+    const allowReroute = !payloadIsTerminal(payload)
+    const wantsReroute = tool === 'dispatch' && allowReroute && rerouteOn && hooks.route?.remaining?.length > 0
+    if (channelOnly || wantsReroute) startTracking(tool, payload, hooks, args, ctx, { allowReroute })
     return payload
   }
   const delegateInput = {

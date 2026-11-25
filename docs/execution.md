@@ -147,15 +147,24 @@ edits are still there, and a scoped writer's saved in-scope patch
 text gets a note naming the failed attempt and telling the agent to run
 `git status`/`git diff` and continue from there. Read jobs rerun unchanged. Any
 other `errorKind` ends the dispatch as before. Rerouting applies to every
-`dispatch` MCP call, with or without a task; the attempts and why each ended
-(`attempts[]`, `reroutes`) are in the notice. A client that does not use tasks
-sees the reroute through the original job id: `job_status`/`job_wait`/`job_result`
-report the last attempt (`status` stays `running` while the chain runs) plus
-`reroutedTo` (the successor), `finalJobId` and `rerouting`, and `job_cancel`
-cancels the attempt that is running; a job that never rerouted has none of those
-keys. (There is a window of up to one poll, about 0.5s, between the first job
-turning `failed` and the hub marking it as rerouting.) `tasks/cancel` during a
-reroute also stops the successor. Only an MCP `dispatch` call reroutes:
+`dispatch` MCP call whose result did not already carry the job's terminal
+outcome: when `dispatch` waited (`waitMode` `attention`/`terminal`, the Claude
+Code default) and returned the job `failed`, that failure is final for the
+caller and the hub never reroutes it (the caller may fall back on its own). The
+attempts and why each ended (`attempts[]`, `reroutes`) are in the notice. A
+client that does not use tasks sees the reroute through the original job id:
+`job_status`/`job_wait`/`job_result` report the last attempt (`status` stays
+`running` while the chain runs) plus `reroutedTo` (the successor), `finalJobId`
+and `rerouting`; a job that never rerouted has none of those keys. The job is
+marked as reroutable (`rerouteArmed` on its record) before its id reaches the
+caller, so `job_wait` never returns a quota failure that the hub is about to
+reroute. `job_cancel` on any id of the chain stops the whole chain: it cancels
+the attempt that is running, a reroute that is still starting does not go on
+(its successor is cancelled as soon as it exists), and the response carries
+`rerouteCancelled: true`. `tasks/cancel` during a reroute also stops the
+successor. A reroute that is still being decided or started reads as `running`
+for at most 5 minutes; after that (the server died mid-reroute) the job reads
+as what it is, `failed`. Only an MCP `dispatch` call reroutes:
 the workflow engine and direct `dispatch()` callers keep their own retry policy.
 
 **Claude Code channel** (opt in, `AGENT_HUB_CHANNEL=1`), for legacy 2025-era

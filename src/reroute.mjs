@@ -81,14 +81,70 @@ export function buildRerouteTask({ task, previous, partial }) {
 const MAX_CHAIN_HOPS = 10
 
 /**
+ * How long a reroute decision may stay open. The supervisor decides within a few
+ * poll ticks and a restart takes seconds (lock retries, preflight); a flag older
+ * than this was left by a server that died mid-reroute, and the job reads as what
+ * it really is (failed) instead of `running` forever.
+ */
+export const REROUTE_DECISION_TTL_MS = 5 * 60 * 1000
+
+function ageMs(iso, now) {
+  const t = Date.parse(iso ?? '')
+  return Number.isFinite(t) ? now - t : Infinity
+}
+
+/**
+ * Is a reroute of this job still being decided or started? Three persisted flags
+ * (all written by the MCP supervisor, src/notify/mcp-supervisor.mjs):
+ *   - rerouteArmed: the supervisor follows this job and would reroute a quota
+ *     failure. It is written BEFORE the dispatch result (the job id) reaches the
+ *     caller, so a caller polling job_wait/job_status can never read a quota
+ *     failure that is about to be rerouted as terminal, however the supervisor's
+ *     and the caller's poll ticks interleave. The supervisor clears it once it
+ *     decides not to reroute.
+ *   - reroutePending (+ reroutePendingAt): the next attempt is starting.
+ *   - rerouteCancelled: job_cancel asked to stop the chain; nothing is pending.
+ * Every open state expires after REROUTE_DECISION_TTL_MS.
+ */
+export function reroutePendingFor(record, now = Date.now()) {
+  if (!record || record.reroutedTo || record.rerouteCancelled) return false
+  if (record.reroutePending) return ageMs(record.reroutePendingAt ?? record.updatedAt, now) < REROUTE_DECISION_TTL_MS
+  if (record.rerouteArmed && isQuotaFailure(record)) return ageMs(record.updatedAt, now) < REROUTE_DECISION_TTL_MS
+  return false
+}
+
+/**
+ * The job ids of a reroute chain, starting at `jobId` and following reroutedTo.
+ * Each entry is {jobId, record}; a link that cannot be read ends the chain.
+ */
+export function rerouteChain(jobId, readResultFn, env = process.env) {
+  const chain = []
+  let id = jobId
+  for (let i = 0; id && i <= MAX_CHAIN_HOPS; i++) {
+    let record
+    try {
+      record = readResultFn(id, env)
+    } catch {
+      break
+    }
+    chain.push({ jobId: id, record })
+    id = record?.reroutedTo ?? null
+  }
+  return chain
+}
+
+/**
  * A job that was rerouted after quota is not the end of its dispatch: the
  * supervisor marks it with `reroutePending` while the next attempt starts and
- * `reroutedTo` once it runs. Read-side views (job_status, job_wait, job_result,
- * job_cancel) call this to report the dispatch's outcome through the original
- * job id. Returns null for a job that never rerouted, so its view is unchanged.
+ * `reroutedTo` once it runs (see reroutePendingFor for the flags). Read-side
+ * views (job_status, job_wait, job_result, job_cancel) call this to report the
+ * dispatch's outcome through the original job id. Returns null for a job that
+ * never rerouted and is not about to, so its view is unchanged.
  */
-export function rerouteOverlay(record, readResultFn, env = process.env, depth = 0) {
-  if (!record || (!record.reroutedTo && !record.reroutePending)) return null
+export function rerouteOverlay(record, readResultFn, env = process.env, depth = 0, now = Date.now()) {
+  if (!record) return null
+  const pendingNow = reroutePendingFor(record, now)
+  if (!record.reroutedTo && !pendingNow) return null
   const pending = { status: 'running', errorKind: null, error: null, updatedAt: record.updatedAt, reroutedTo: record.reroutedTo ?? null, finalJobId: null, tail: null }
   if (!record.reroutedTo || depth >= MAX_CHAIN_HOPS) return pending
   let next
@@ -97,7 +153,7 @@ export function rerouteOverlay(record, readResultFn, env = process.env, depth = 
   } catch {
     return pending
   }
-  const deeper = rerouteOverlay(next, readResultFn, env, depth + 1)
+  const deeper = rerouteOverlay(next, readResultFn, env, depth + 1, now)
   if (deeper) return { ...deeper, reroutedTo: record.reroutedTo }
   return {
     status: next.status,

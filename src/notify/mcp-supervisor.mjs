@@ -7,7 +7,12 @@
  *     routed fallback (src/reroute.mjs), bounded by maxReroutes.
  *
  * One tracker per call, keyed by the first job's id (that id is the task id). It
- * lives in this server process only; nothing is written to events.jsonl.
+ * lives in this server process only (a finished one is dropped after retainMs);
+ * nothing is written to events.jsonl. A job that may be rerouted carries
+ * persisted flags on its record (rerouteArmed, reroutePending, reroutedTo; see
+ * reroutePendingFor in src/reroute.mjs) so other readers never see a quota
+ * failure as final while the hub is still moving it on, and job_cancel can stop
+ * the chain through rerouteCancelled.
  */
 import { watchJobUntilTerminal, buildJobNotice, noticeText, mergeAttempts } from './mcp-jobs.mjs'
 import { readResult as defaultReadResult, updateResult } from '../jobstore.mjs'
@@ -15,6 +20,8 @@ import { isQuotaFailure, buildRerouteTask, preservePartialWork } from '../rerout
 
 const RESTART_LOCK_RETRIES = 6
 const RESTART_LOCK_WAIT_MS = 250
+// tasks/get keeps answering with the attempts of a finished call for this long.
+const DEFAULT_RETAIN_MS = 60 * 60 * 1000
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref?.())
 
@@ -25,12 +32,14 @@ export class JobSupervisor {
    * @param {Function} [opts.readResultFn]
    * @param {Function} opts.cancelJobFn (jobId, {env}) => record
    * @param {number} [opts.pollMs]
+   * @param {number} [opts.retainMs] how long a finished tracker is kept for tasks/get
    */
-  constructor({ env = process.env, readResultFn = defaultReadResult, cancelJobFn, pollMs = 500 } = {}) {
+  constructor({ env = process.env, readResultFn = defaultReadResult, cancelJobFn, pollMs = 500, retainMs = DEFAULT_RETAIN_MS } = {}) {
     this.env = env
     this.readResultFn = readResultFn
     this.cancelJobFn = cancelJobFn
     this.pollMs = pollMs
+    this.retainMs = retainMs
     this.trackers = new Map()
   }
 
@@ -59,12 +68,19 @@ export class JobSupervisor {
       record: null,
       notice: null,
       done: null,
+      finishedAt: null,
     }
+    this.#prune()
     this.trackers.set(jobId, tracker)
+    // Synchronously, before the caller gets the job id back: from now on a quota
+    // failure of this job reads as non-terminal until the supervisor decides.
+    if (reroute && this.#mayReroute(reroute, tracker, reroute.remaining)) this.#mark(jobId, { rerouteArmed: true })
     tracker.done = this.#run(tracker, reroute).then(() => {
+      tracker.finishedAt = Date.now()
       try {
         onTerminal?.(tracker)
       } catch {}
+      this.#prune()
       return tracker
     })
     return tracker
@@ -88,6 +104,30 @@ export class JobSupervisor {
     return tracker
   }
 
+  #mayReroute(reroute, tracker, remaining) {
+    return tracker.reroutes < reroute.maxReroutes && remaining.length > 0
+  }
+
+  /** job_cancel (any process) asked to stop this call's reroute chain. */
+  #cancelRequested(tracker, jobId) {
+    for (const id of new Set([tracker.taskId, jobId])) {
+      try {
+        if (this.readResultFn(id, this.env)?.rerouteCancelled) return true
+      } catch {}
+    }
+    return false
+  }
+
+  #stopped(tracker, jobId) {
+    if (tracker.cancelled) return true
+    if (!this.#cancelRequested(tracker, jobId)) return false
+    tracker.cancelled = true
+    tracker.status = 'cancelled'
+    tracker.statusMessage = 'reroute cancelled by job_cancel'
+    tracker.lastUpdatedAt = new Date().toISOString()
+    return true
+  }
+
   async #run(tracker, reroute) {
     let remaining = reroute ? [...reroute.remaining] : []
     for (;;) {
@@ -98,22 +138,32 @@ export class JobSupervisor {
         pollMs: this.pollMs,
         shouldStop: () => tracker.cancelled,
       })
-      if (!record || tracker.cancelled) return
+      if (!record || tracker.cancelled) {
+        if (reroute) this.#disarm(tracker.currentJobId)
+        return
+      }
       tracker.attempts = mergeAttempts(tracker.attempts, record)
       tracker.lastUpdatedAt = new Date().toISOString()
 
-      const canReroute = reroute && !tracker.cancelled && tracker.reroutes < reroute.maxReroutes && remaining.length > 0 && isQuotaFailure(record)
+      const canReroute = reroute && this.#mayReroute(reroute, tracker, remaining) && isQuotaFailure(record) && !this.#stopped(tracker, record.jobId)
       if (canReroute) {
         const next = remaining.shift()
         // Read-side views report this job as still going while the next attempt starts.
-        this.#mark(record.jobId, { reroutePending: true })
-        const started = await this.#restart(reroute, { next, remaining, previous: record }, () => tracker.cancelled)
-        if (started.ok) this.#mark(record.jobId, { reroutePending: false, reroutedTo: started.jobId })
-        else this.#mark(record.jobId, { reroutePending: false })
-        if (tracker.cancelled) {
-          // tasks/cancel landed while the successor was starting: it was not running yet
-          // when cancel() stopped the old job, so stop it here (and free its write lock).
+        this.#mark(record.jobId, { rerouteArmed: false, reroutePending: true, reroutePendingAt: new Date().toISOString() })
+        const started = await this.#restart(reroute, { next, remaining, previous: record }, () => tracker.cancelled || this.#cancelRequested(tracker, record.jobId))
+        if (started.ok) {
+          // Arm the successor before it becomes reachable through reroutedTo.
+          if (tracker.reroutes + 1 < reroute.maxReroutes && started.remaining?.length > 0) this.#mark(started.jobId, { rerouteArmed: true })
+          this.#mark(record.jobId, { reroutePending: false, reroutedTo: started.jobId })
+        } else this.#mark(record.jobId, { reroutePending: false })
+        // Checked AFTER reroutedTo is written: job_cancel writes rerouteCancelled
+        // BEFORE it re-reads reroutedTo, so either this check sees the request or
+        // job_cancel sees the successor and cancels it itself.
+        if (this.#stopped(tracker, record.jobId)) {
+          // A cancel landed while the successor was starting: it was not running yet
+          // when the old job was stopped, so stop it here (and free its write lock).
           if (started.ok) {
+            this.#disarm(started.jobId)
             try {
               await this.cancelJobFn?.(started.jobId, { env: this.env })
             } catch {}
@@ -134,8 +184,18 @@ export class JobSupervisor {
           tracker.attempts.push({ agent: next?.agent ?? null, model: next?.model ?? null, jobId: null, status: 'failed', errorKind: started.errorKind, error: started.error })
         }
       }
+      if (record.rerouteArmed) this.#mark(record.jobId, { rerouteArmed: false })
+      if (tracker.cancelled) return
       this.#finish(tracker, record)
       return
+    }
+  }
+
+  /** Drop finished trackers older than retainMs (a working one is always kept). */
+  #prune() {
+    const cutoff = Date.now() - this.retainMs
+    for (const [id, t] of this.trackers) {
+      if (t.finishedAt != null && t.finishedAt <= cutoff) this.trackers.delete(id)
     }
   }
 
@@ -156,6 +216,13 @@ export class JobSupervisor {
       }
     }
     return { ok: false, attempts: lastError?.attempts ?? [], errorKind: lastError?.errorKind ?? 'crash', error: String(lastError?.message ?? lastError) }
+  }
+
+  /** The supervisor will not reroute this job: its failure, if any, is final. */
+  #disarm(jobId) {
+    try {
+      if (this.readResultFn(jobId, this.env)?.rerouteArmed) this.#mark(jobId, { rerouteArmed: false })
+    } catch {}
   }
 
   #mark(jobId, patch) {

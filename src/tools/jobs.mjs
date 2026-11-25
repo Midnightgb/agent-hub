@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import { parseReviewOutput } from '../review-output.mjs'
 import { startJob as defaultStartJob, cancelJob } from '../jobrunner.mjs'
-import { readResult, responsePath } from '../jobstore.mjs'
-import { rerouteOverlay } from '../reroute.mjs'
+import { readResult, responsePath, updateResult } from '../jobstore.mjs'
+import { rerouteOverlay, rerouteChain } from '../reroute.mjs'
 import { WRITE_ALLOWLIST, TURN_DEPTH_WARNING } from '../config.mjs'
 import { TASK_TYPES } from '../schemas.mjs'
 import { keyForJob, NO_KEY_MESSAGE } from '../cloud/credentials.mjs'
@@ -528,9 +528,29 @@ function reviewView(result, fullText) {
 }
 
 export async function jobCancelTool({ jobId }) {
-  // Cancelling a rerouted job cancels the attempt that is running now.
-  const overlay = rerouteOverlay(readResult(jobId), readResult)
-  const target = overlay?.finalJobId && !TERMINAL_STATUSES.has(overlay.status) ? overlay.finalJobId : jobId
-  const result = await cancelJob(target)
-  return jobStatusView(target === jobId ? result : readResult(jobId))
+  const record = readResult(jobId)
+  if (!record.rerouteArmed && !record.reroutePending && !record.reroutedTo) {
+    const result = await cancelJob(jobId)
+    return jobStatusView(result)
+  }
+  // A job the MCP supervisor may reroute after quota (src/notify/mcp-supervisor.mjs):
+  // cancelling it stops the whole chain, not only the attempt that is running now.
+  // 1. Publish the request on every link first: a supervisor deciding or starting
+  //    the next attempt checks it (also after it writes reroutedTo) and cancels
+  //    the successor it just started.
+  const markCancelled = (id) => {
+    try {
+      updateResult(id, { rerouteCancelled: true })
+    } catch {}
+  }
+  for (const link of rerouteChain(jobId, readResult)) markCancelled(link.jobId)
+  // 2. Then re-read the chain: a successor that became reachable meanwhile is
+  //    cancelled here. One of the two sides always sees the other.
+  const chain = rerouteChain(jobId, readResult)
+  const last = chain[chain.length - 1]
+  if (last && !TERMINAL_STATUSES.has(last.record?.status)) {
+    markCancelled(last.jobId)
+    await cancelJob(last.jobId)
+  }
+  return { ...jobStatusView(readResult(jobId)), rerouteCancelled: true }
 }

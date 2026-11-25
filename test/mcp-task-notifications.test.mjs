@@ -34,9 +34,9 @@ function fakeJob({ agent = 'copilot', model = 'gpt-5.1', mode = 'write', cwd = '
  * protocol version and client capabilities in _meta (no handshake). era 2025: the
  * legacy initialize handshake.
  */
-async function connect({ deps = {}, env = {}, era = '2026', extensions = { [TASKS]: {} } } = {}) {
+async function connect({ deps = {}, env = {}, era = '2026', extensions = { [TASKS]: {} }, taskPollMs = 15 } = {}) {
   const [clientT, serverT] = InMemoryTransport.createLinkedPair()
-  serveStdio(() => buildServer({ env: { ...process.env, ...env }, deps, taskPollMs: 15 }), { transport: serverT })
+  serveStdio(() => buildServer({ env: { ...process.env, ...env }, deps, taskPollMs }), { transport: serverT })
   const pending = new Map()
   const notifications = []
   clientT.onmessage = (m) => {
@@ -606,6 +606,148 @@ test('a job that never rerouted has the exact historical job_status shape', asyn
   } finally {
     await c.close()
   }
+})
+
+// ---- a reroute never contradicts what the caller already saw ------------------
+
+const parseText = (res) => JSON.parse(res.result.content[0].text)
+
+test('a dispatch that returned a terminal failure to the caller (waitMode attention/terminal) is never rerouted', async () => {
+  for (const waitMode of ['attention', 'terminal']) {
+    const calls = []
+    const base = fakeDispatchFactory({ chain: CHAIN, calls, outcomes: { 0: quota(), 1: { status: 'succeeded' } }, afterMs: 5000 })
+    // dispatch waited for the job: the caller gets the terminal quota failure in the payload
+    const deps = {
+      dispatch: async (args) => {
+        const res = await base(args)
+        if (args.routeFn) return res
+        updateResult(res.job.jobId, quota())
+        const record = readResult(res.job.jobId)
+        return { ...res, job: record, wait: { done: true, aborted: false, timedOut: false, waiting: false, status: 'failed', record } }
+      },
+    }
+    const c = await connect({ deps, era: '2025' })
+    try {
+      const payload = parseText(await c.call('dispatch', { task: 'build it', cwd: '/tmp', mode: 'write', waitMode }))
+      assert.equal(payload.wait.status, 'failed')
+      await sleep(300)
+      assert.equal(calls.length, 1, `${waitMode}: no second dispatch after the caller saw the failure`)
+      const view = parseText(await c.call('job_status', { jobId: payload.job.jobId }))
+      assert.equal(view.status, 'failed')
+      assert.equal(view.errorKind, 'quota')
+      assert.equal('reroutedTo' in view, false)
+    } finally {
+      await c.close()
+    }
+  }
+})
+
+test('a non-terminal dispatch (waitMode none) that hits a quota failure still reroutes exactly once', async () => {
+  const calls = []
+  const deps = { dispatch: fakeDispatchFactory({ chain: CHAIN, calls, outcomes: { 0: quota(), 1: { status: 'succeeded' } }, afterMs: 40 }) }
+  const c = await connect({ deps, era: '2025' })
+  try {
+    const payload = parseText(await c.call('dispatch', { task: 'build it', cwd: '/tmp', mode: 'write', waitMode: 'none' }))
+    const waited = parseText(await c.call('job_wait', { jobId: payload.job.jobId, timeoutS: 10 }))
+    assert.equal(waited.status, 'succeeded')
+    await sleep(150)
+    assert.equal(calls.length, 2)
+  } finally {
+    await c.close()
+  }
+})
+
+test('job_wait never returns a quota failure that the hub is about to reroute, even when the supervisor polls slower', async () => {
+  const calls = []
+  const deps = { dispatch: fakeDispatchFactory({ chain: CHAIN, calls, outcomes: { 0: quota(), 1: { status: 'succeeded' } }, afterMs: 40 }) }
+  // the supervisor reads the record every 1s, job_wait every 300ms: job_wait sees the failure first
+  const c = await connect({ deps, era: '2025', taskPollMs: 1000 })
+  try {
+    const payload = parseText(await c.call('dispatch', { task: 'build it', cwd: '/tmp', mode: 'write', waitMode: 'none' }))
+    const waited = parseText(await c.call('job_wait', { jobId: payload.job.jobId, timeoutS: 15 }))
+    assert.equal(waited.done, true)
+    assert.equal(waited.status, 'succeeded', 'the caller only sees the outcome of the whole chain')
+    assert.ok(waited.reroutedTo)
+    assert.equal(calls.length, 2)
+  } finally {
+    await c.close()
+  }
+})
+
+test('job_cancel on the original id while a reroute is pending stops the successor', async () => {
+  const calls = []
+  let restarting = false
+  const base = fakeDispatchFactory({ chain: CHAIN, calls, outcomes: { 0: quota(), 1: { status: 'succeeded' } }, afterMs: 5000 })
+  const deps = {
+    dispatch: async (args) => {
+      if (args.routeFn) {
+        restarting = true
+        await sleep(400)
+      }
+      const res = await base(args)
+      if (!args.routeFn) updateResult(res.job.jobId, quota())
+      return res
+    },
+    cancelJob: async (jobId) => {
+      updateResult(jobId, { status: 'canceled' })
+      return readResult(jobId)
+    },
+  }
+  const c = await connect({ deps, era: '2025' })
+  try {
+    const payload = parseText(await c.call('dispatch', { task: 'build it', cwd: '/tmp', mode: 'write', waitMode: 'none' }))
+    const originalId = payload.job.jobId
+    await until(() => restarting)
+    const cancelled = parseText(await c.call('job_cancel', { jobId: originalId }))
+    assert.equal(cancelled.rerouteCancelled, true)
+    assert.notEqual(cancelled.status, 'running', 'job_cancel does not report a cancelled reroute as still going')
+    // the successor that was starting when the cancel landed never keeps running
+    const original = await until(() => {
+      const r = readResult(originalId)
+      return r.reroutePending ? null : r
+    })
+    // the restart was already in flight: its successor exists and is cancelled at once
+    assert.ok(original.reroutedTo)
+    await until(() => readResult(original.reroutedTo).status === 'canceled')
+    await sleep(150)
+    assert.equal(calls.length, 2, 'no further attempt after the cancel')
+    const view = parseText(await c.call('job_status', { jobId: originalId }))
+    assert.notEqual(view.status, 'running')
+    assert.notEqual(view.status, 'succeeded')
+  } finally {
+    await c.close()
+  }
+})
+
+test('a stale reroutePending flag (the server died mid-reroute) stops reading as running', async () => {
+  const job = createJob({ agent: 'agy', model: 'gemini-3.8-pro', task: 't', cwd: '/tmp', title: 'stale' })
+  updateResult(job.jobId, { ...quota(), reroutePending: true, reroutePendingAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() })
+  const fresh = createJob({ agent: 'agy', model: 'gemini-3.8-pro', task: 't', cwd: '/tmp', title: 'fresh' })
+  updateResult(fresh.jobId, { ...quota(), reroutePending: true, reroutePendingAt: new Date().toISOString() })
+  const c = await connect({ era: '2025' })
+  try {
+    const stale = parseText(await c.call('job_status', { jobId: job.jobId }))
+    assert.equal(stale.status, 'failed')
+    assert.equal(stale.errorKind, 'quota')
+    const waited = parseText(await c.call('job_wait', { jobId: job.jobId, timeoutS: 1 }))
+    assert.equal(waited.done, true)
+    assert.equal(waited.status, 'failed')
+    // a pending flag that is still fresh keeps reading as running
+    assert.equal(parseText(await c.call('job_status', { jobId: fresh.jobId })).status, 'running')
+  } finally {
+    await c.close()
+  }
+})
+
+test('the supervisor drops finished trackers after their retention', async () => {
+  const supervisor = new JobSupervisor({ cancelJobFn: async () => {}, pollMs: 10, retainMs: 0 })
+  const job = fakeJob({ finish: { status: 'succeeded' }, afterMs: 20 })
+  const tracker = supervisor.start({ tool: 'delegate', jobId: job.jobId })
+  assert.equal(supervisor.get(job.jobId), tracker, 'a working tracker is kept')
+  await tracker.done
+  assert.equal(tracker.status, 'completed')
+  assert.equal(supervisor.get(job.jobId), null)
+  assert.equal(supervisor.trackers.size, 0)
 })
 
 // ---- the SDK hook the task support depends on --------------------------------
