@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Vanished-pin substitution: when an agy, opencode or gentle-shell pinned model
+  is no longer listed by its CLI's live catalog, `route()` swaps it for the
+  newest same-family, same-effort successor in the same chain slot, marks it
+  `substitutedFrom`, and lists each swap in `substitutions` (one timeline
+  event per swap). Holds on the pinned id are honored (skipped as `held`,
+  never substituted), pool steps (`@free`, `@go`) are untouched, and dated
+  snapshot ids (e.g. `claude-sonnet-4-20250514`) never count as newer than a
+  non-dated release. `agents_status` points stale pins at their `successor` and lists other
+  discovered catalog models (`source: 'discovery'`), except opencode models
+  the model policy blocks.
+  See [docs/routing.md](docs/routing.md#vanished-pin-substitution).
 - `gentle-shell` agent (pi with the Gentle Shell package): a CLI adapter whose
   models come from `pi --list-models` (`provider/id`, e.g.
   `anthropic/claude-sonnet-5-5`). It is **explicit-only**: no routing chain

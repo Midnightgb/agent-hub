@@ -10,7 +10,7 @@ import { quotaFor, getProvider } from '../quota/mapping.mjs'
 import { agyBrowserStatus, agyBrowserAvailable } from '../providers/agy-mcp.mjs'
 import { getAgysMode } from '../providers/agys.mjs'
 import { activeQuotaMark } from '../routing/quota-gate.mjs'
-import { expandChain } from '../model-policy.mjs'
+import { expandChain, modelDecision } from '../model-policy.mjs'
 
 /**
  * The default set of agent+model pairs agents_status checks: every distinct
@@ -97,7 +97,7 @@ export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), e
     }
   })
 
-  return [...pinnedRows, ...discoveredRows(pairs, discovery)]
+  return [...pinnedRows, ...discoveredRows(pairs, discovery, env)]
 }
 
 /**
@@ -107,7 +107,7 @@ export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), e
  * already passed L0 (--version) and the listing itself is L1, and spawning
  * --version for dozens of catalog models would make agents_status crawl.
  */
-function discoveredRows(pairs, discovery) {
+function discoveredRows(pairs, discovery, env) {
   const pinned = new Set(pairs.map((p) => `${p.agent}:${p.model}`))
   const rows = []
   for (const agent of SUCCESSOR_AGENTS) {
@@ -115,6 +115,9 @@ function discoveredRows(pairs, discovery) {
     if (!hasGoodCatalog(row)) continue
     for (const m of row.models) {
       if (pinned.has(`${agent}:${m.id}`)) continue
+      // A model the opencode model policy blocks is never offered (same rule
+      // as the pinned pairs: expandChain never checks a blocked model).
+      if (!modelDecision({ agent, model: m.id, env, discovery }).allowed) continue
       const { tier, tierSource, catalogCheckedAt } = effectiveTier({ agent, model: m.id, discovery, registry: MODEL_REGISTRY })
       rows.push({
         agent,

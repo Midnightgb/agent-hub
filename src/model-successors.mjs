@@ -2,6 +2,7 @@ import { paths, SUCCESSOR_PROVIDER_PREFERENCE } from './config.mjs'
 import { catalogTier } from './catalog.mjs'
 import { parseModelId } from './model-gaps.mjs'
 import { appendEvent } from './eventlog.mjs'
+import { isPoolModel } from './model-policy.mjs'
 
 /**
  * Model auto-discovery for pinned ids: when a model hardcoded in
@@ -54,7 +55,12 @@ function compareVersions(a, b) {
  * pinned model is known to be free — be confirmed free too, so a substitution
  * never silently starts billing.
  *
- * Ranking: highest version, then the pinned id's own provider, then
+ * A trailing YYYYMMDD snapshot date is not part of the version
+ * (parseModelId), so `claude-sonnet-4-20250514` is version 4 and never
+ * outranks `claude-sonnet-4-6`.
+ *
+ * Ranking: highest version, then non-dated over dated snapshots, then the
+ * pinned id's own provider, then
  * SUCCESSOR_PROVIDER_PREFERENCE[agent], then catalog order.
  */
 export function findSuccessor({ agent, model, discovery = {}, registry = {}, preference = SUCCESSOR_PROVIDER_PREFERENCE }) {
@@ -79,6 +85,7 @@ export function findSuccessor({ agent, model, discovery = {}, registry = {}, pre
     candidates.push({
       id: entry.id,
       version: parsed.version ?? [],
+      dated: Boolean(parsed.snapshot),
       sameProvider: provider === pinned.provider,
       prefRank: prefIndex === -1 ? Number.MAX_SAFE_INTEGER : prefIndex,
       index,
@@ -88,6 +95,7 @@ export function findSuccessor({ agent, model, discovery = {}, registry = {}, pre
   candidates.sort(
     (a, b) =>
       compareVersions(b.version, a.version) ||
+      Number(a.dated) - Number(b.dated) ||
       Number(b.sameProvider) - Number(a.sameProvider) ||
       a.prefRank - b.prefRank ||
       a.index - b.index
@@ -122,14 +130,20 @@ function announce({ agent, from, to }, env) {
  * Replace every chain candidate (and its parallelWith) whose model vanished
  * from its agent's catalog with the discovered successor. Substituted
  * candidates carry `substitutedFrom`; `substitutions` lists each distinct
- * swap. Candidates without a successor are returned unchanged.
+ * swap. Candidates without a successor are returned unchanged, and so are:
+ * - pool steps (`@free`, `@go`): expandChain resolves them from the catalog
+ *   under the opencode model policy, so there is nothing pinned to replace;
+ * - held pins (`isHeld(agent, model)` true): a hold set on the pinned id is
+ *   honored, so route() still reports that candidate as skipped `held`
+ *   instead of silently routing to its successor.
  */
-export function substituteChain(chain, { discovery = {}, registry = {}, env = process.env } = {}) {
+export function substituteChain(chain, { discovery = {}, registry = {}, env = process.env, isHeld = () => false } = {}) {
   const substitutions = []
   const seen = new Set()
 
   const resolve = (candidate) => {
-    if (!candidate || candidate.agent === 'claude') return candidate
+    if (!candidate || candidate.agent === 'claude' || isPoolModel(candidate.model)) return candidate
+    if (isHeld(candidate.agent, candidate.model)) return candidate
     const to = findSuccessor({ agent: candidate.agent, model: candidate.model, discovery, registry })
     if (!to) return candidate
     const key = `${candidate.agent}|${candidate.model}|${to}`

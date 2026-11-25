@@ -263,11 +263,15 @@ export async function route({
   // the discovered successor (src/model-successors.mjs) AFTER ordering, so
   // the substitute takes the vanished candidate's exact slot in the chain.
   // Pool steps (`@free`/`@go`) are left alone and expanded afterwards, so a
-  // substituted id is still subject to the opencode model policy.
+  // substituted id is still subject to the opencode model policy. A hold on
+  // the pinned id is honored: that candidate is not substituted, so
+  // evaluateCandidate() skips it as `held`.
+  const overrides = readOverrides(env)
   const { chain: substituted, substitutions } = substituteChain(declared, {
     discovery: readDiscovery(env),
     registry: MODEL_REGISTRY,
     env,
+    isHeld: (agent, model) => overrides[overrideKey(agent, model)]?.hold === true,
   })
   const { chain, emptyPools } = expandChain(substituted, { env })
   const appliedProposal = applied ? { id: applied.proposalId } : null

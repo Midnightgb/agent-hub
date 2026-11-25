@@ -33,6 +33,10 @@ proposals instead of leaving `DELEGATION_MAP` silently stale. Also route
 ## Constraints
 
 - Never auto-insert or auto-promote an unevaluated model.
+  Exception (2026-11-25, see Log): substituting a VANISHED pin with its
+  same-family, same-effort successor at route() time is deliberate; held
+  pins and pool steps (`@free`/`@go`) are excluded. Any other new model
+  still enters a chain only through an accepted `add_candidate` proposal.
 - Skip catalogs that are not authoritative: copilot (only `auto` is reliable)
   and codex (no real listing).
 - Existing reorder proposals keep working; `chainHash` staleness semantics
@@ -115,3 +119,16 @@ files across discovery, proposals, router, schemas, dashboard).
 - Delivery: single PR to main, merged at the user's request.
 - Next: none for this feature. Follow-ups tracked separately: C (per-job
   diff stats in dashboard), D (hub-side verification for agy jobs).
+
+## Log
+
+- 2026-11-25: PR #141 (vanished-pin substitution) relaxes the constraint
+  "Never auto-insert or auto-promote an unevaluated model." for one case
+  only: a pinned id its CLI catalog no longer lists is replaced, in the same
+  chain slot, by its same-family, same-effort successor (never lower version,
+  never a dated snapshot over a non-dated id, never paid for a free pin).
+  Rationale: a vanished pin cannot run at all, so keeping it only breaks
+  routing. Excluded: a pinned id with a hold (still skipped as `held`) and
+  pool steps `@free`/`@go` (expanded by the opencode model policy, which also
+  gates any substituted opencode id). New models otherwise still enter only
+  via `add_candidate` proposals.
