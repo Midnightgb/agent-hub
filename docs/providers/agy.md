@@ -251,6 +251,10 @@ profile with its own `HOME`, so each profile reads its own
    `gemini-3.8-flash-high`, fallback agy `claude-sonnet-4-6`, default timeout
    at least 1800 s). The page must already be reachable: the agy guard tells the
    job to use MCP browser tools and not to start a dev server.
+   Screenshots and page snapshots the job writes under `.playwright-mcp/`
+   survive the scratch copy: they are saved to `runs/<jobId>/artifacts/` and
+   listed in the job's `isolation.artifacts`, so no `isolation: 'in-place'` is
+   needed to keep them.
 
 A config counts as having a browser when an enabled server (no
 `disabled: true`) is named `playwright` or references `@playwright/mcp` in its

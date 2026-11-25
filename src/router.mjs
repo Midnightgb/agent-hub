@@ -13,6 +13,7 @@ import { codexQuotaDecision } from './routing/codex-gate.mjs'
 import { quotaRoutingMode, quotaSkipReason } from './routing/quota-gate.mjs'
 import { resolveAgyProfileSync as defaultResolveAgyProfileSync, getAgysMode } from './providers/agys.mjs'
 import { requirementsFor } from './capabilities.mjs'
+import { expandChain } from './model-policy.mjs'
 
 // T4: the ONLY taskTypes where codex appears (always as a last-resort
 // fallback — see DELEGATION_MAP) and therefore the only ones where the
@@ -24,13 +25,17 @@ const CODEX_GATED_TASK_TYPES = new Set(['triage', 'mechanical-edit'])
  * Claude subagent tiers are {agent:'claude', model:'haiku'|'sonnet'|'opus'}
  * — the caller (Claude Code itself) runs those via the Agent tool; they are
  * never preflighted or breaker-checked here.
+ *
+ * opencode steps name a pool (`@free`, `@go`) instead of a model id: the
+ * catalog churns, so route() expands a pool to the models the user allowed
+ * in the dashboard (model-policy.mjs expandChain).
  */
 export const DELEGATION_MAP = {
   recon: {
     why: 'proven context compression, cheap refreshable quota',
     chain: [
       { agent: 'agy', model: 'gemini-3.8-flash-low', mode: 'read' },
-      { agent: 'opencode', model: 'opencode/muse-spark-1.3-contributor-free', mode: 'read' },
+      { agent: 'opencode', model: '@free', mode: 'read' },
       { agent: 'claude', model: 'haiku' },
     ],
   },
@@ -38,24 +43,26 @@ export const DELEGATION_MAP = {
     why: 'needs multi-hop reasoning, 1M ctx',
     chain: [
       { agent: 'agy', model: 'gemini-3.8-flash-high', mode: 'read' },
-      { agent: 'opencode', model: 'opencode/nemotron-3-ultra-free', mode: 'read' },
+      // Free before Go: the Go subscription is a paid quota, so it is only
+      // spent once the allowed free models are exhausted.
+      { agent: 'opencode', model: '@free', mode: 'read' },
+      { agent: 'opencode', model: '@go', mode: 'read' },
       { agent: 'claude', model: 'sonnet' },
     ],
   },
   research: {
     why: 'zero cost, 1M ctx',
     chain: [
-      { agent: 'opencode', model: 'opencode/muse-spark-1.3-contributor-free', mode: 'read' },
-      { agent: 'opencode', model: 'opencode/mimo-v2.5-free', mode: 'read' },
+      { agent: 'opencode', model: '@free', mode: 'read' },
       { agent: 'agy', model: 'gemini-3.8-flash-medium', mode: 'read' },
     ],
   },
   triage: {
     why: 'lowest latency',
     chain: [
-      // nemotron-3.5-lightning-free hung indefinitely in live tests (2026-09-11);
-      // muse-spark-1.3 is the free model verified to answer.
-      { agent: 'opencode', model: 'opencode/muse-spark-1.3-contributor-free', mode: 'read' },
+      // nemotron-3.5-lightning-free hung indefinitely in live tests (2026-09-11):
+      // block a model like that from the dashboard (model-policy.json).
+      { agent: 'opencode', model: '@free', mode: 'read' },
       // copilot's --model allowlist is account-specific and unstable (most
       // documented ids were rejected live); 'auto' is the one value verified
       // reliable. See config.mjs MODEL_REGISTRY for accounts that do allow
@@ -90,9 +97,9 @@ export const DELEGATION_MAP = {
     why: 'cheap write-capable; single writer',
     chain: [
       // agy first: refreshable plan quota, load-balanced across profiles;
-      // deepseek is paid per token, so it only runs when agy is unavailable.
+      // then an OpenCode Go model the user allowed (subscription quota).
       { agent: 'agy', model: 'gemini-3.8-flash-medium', mode: 'write' },
-      { agent: 'opencode', model: 'deepseek/deepseek-v4-flash', mode: 'write' },
+      { agent: 'opencode', model: '@go', mode: 'write' },
       { agent: 'copilot', model: 'auto', mode: 'write' },
       // LAST resort only: codex's plan quota is limited (see config.mjs).
       { agent: 'codex', model: 'default', mode: 'write' },
@@ -251,20 +258,29 @@ export async function route({
   // an accepted addition becomes eligible for promotion once it has metrics.
   const effective = effectiveChainFor(taskType, entry.chain, env)
   const applied = acceptedOrderFor(taskType, env, { chain: effective })
+  const declared = applied ? applied.chain : effective
   // Pinned ids that vanished from their CLI's live catalog are swapped for
   // the discovered successor (src/model-successors.mjs) AFTER ordering, so
   // the substitute takes the vanished candidate's exact slot in the chain.
-  const { chain, substitutions } = substituteChain(applied ? applied.chain : effective, {
+  // Pool steps (`@free`/`@go`) are left alone and expanded afterwards, so a
+  // substituted id is still subject to the opencode model policy.
+  const { chain: substituted, substitutions } = substituteChain(declared, {
     discovery: readDiscovery(env),
     registry: MODEL_REGISTRY,
     env,
   })
+  const { chain, emptyPools } = expandChain(substituted, { env })
   const appliedProposal = applied ? { id: applied.proposalId } : null
 
   const evaluated = chain.map((c) => ({ candidate: c, ...evaluateCandidate(c, env) }))
   const survivors = evaluated.filter((e) => e.usable).map((e) => e.candidate)
-  const skipped = evaluated.filter((e) => !e.usable).map((e) => ({ agent: e.candidate.agent, model: e.candidate.model, reason: e.reason }))
-  const discovery = discoveryForChain(chain, env, includeCatalog)
+  const skipped = [
+    ...emptyPools,
+    ...evaluated.filter((e) => !e.usable).map((e) => ({ agent: e.candidate.agent, model: e.candidate.model, reason: e.reason })),
+  ]
+  // From the declared chain: an agent whose pool expanded to nothing is still
+  // reported, so the caller can see why (e.g. opencode's catalog failed).
+  const discovery = discoveryForChain(declared, env, includeCatalog)
 
   const rows = readMetricsRows(env, _computeMetrics)
   const metricsLookup = {}

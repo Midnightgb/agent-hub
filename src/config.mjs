@@ -34,6 +34,8 @@ export function paths(env = process.env) {
     preflightCacheFile: path.join(home, 'preflight-cache.json'),
     discoveryFile: path.join(home, 'discovery.json'),
     overridesFile: path.join(home, 'overrides.json'),
+    // Which opencode models the user allows (dashboard Agents view); see model-policy.mjs.
+    modelPolicyFile: path.join(home, 'model-policy.json'),
     proposalsFile: path.join(home, 'proposals.json'),
     // Recurring Jules tasks. Owned by the long-lived dashboard process, which
     // is the only process here that outlives a Claude session (see scheduler.mjs).

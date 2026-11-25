@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   background watcher tells the orchestrator when delegated work ends. `job.canceled`
   is now routed, and startup reconcile emits `job.failed` (`errorKind: orphaned`)
   for orphaned jobs.
+- opencode model policy: choose in the dashboard (Agents → opencode models) which opencode
+  catalog models agent-hub may use and in what order; stored in `model-policy.json`.
+  Undecided free models are allowed, Go and paid models are blocked until allowed (with a
+  confirmation, since they spend quota). `GET/POST /api/model-policy`,
+  `PUT /api/model-policy/order`.
 - Opt-in quota-aware routing (`AGENT_HUB_QUOTA_ROUTING=skip`, default `off`):
   `route`/`dispatch` skip a pair whose quota is used up (every eligible agys
   account for agy, the CodexBar windows otherwise; threshold
@@ -34,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `quotaExhaustedUntil` in `agents_status`/`agents_quota`/`GET /api/quota`.
   The dashboard service refreshes quota every `AGENT_HUB_QUOTA_REFRESH_S`
   (default 300) and clears marks once quota is back. Unknown quota never skips.
+- Read jobs in a scratch copy keep their browser artifacts: files written
+  under `.playwright-mcp/` (Playwright MCP screenshots and page snapshots) are
+  copied to `runs/<jobId>/artifacts/` before the copy is removed and listed in
+  `isolation.artifacts`, also when `.playwright-mcp/` is gitignored. A failed
+  copy only adds a warning to the job.
 - Browser capability for agy: a new `browser` capability key, true for agy
   only when the agy MCP config the job will use (base `~/.gemini` or the agys
   profile's own) has an enabled Playwright MCP server. `agents_status` agy rows
@@ -124,6 +134,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- opencode chain steps name pools (`@free`, `@go`) instead of fixed model ids, which had
+  all been retired from the catalog. `route()` expands a pool to the allowed models the
+  live catalog lists (at most 2) and skips an empty one as `pool_empty`; a blocked concrete
+  opencode step is skipped as `model_blocked`. `mechanical-edit` now uses an allowed Go
+  model instead of `deepseek/deepseek-v4-flash`; `call-chain-trace` tries `@free` before `@go`.
+- A job on an opencode model the policy does not allow is rejected before launch with
+  `code: model_blocked`. The same applies to `gentle-shell` on an `opencode-go/*` model
+  (it spends the same opencode Go quota), judged by the opencode decision for that model.
 - `dispatch`: an explicit `mode` now wins over the routed chain step's own
   mode on every step (adaptive timeout, `startJob`, per-cwd write-lock
   reservation, `writeScope` forwarding). When they differ the response carries

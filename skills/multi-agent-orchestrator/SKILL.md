@@ -178,17 +178,18 @@ files, you paid two quotas for one answer. Delegate when the answer is a *locati
 
 | taskType | Primary | Fallback(s) | Why |
 |---|---|---|---|
-| `recon` | agy `gemini-3.8-flash-low` | opencode `muse-spark-1.3-contributor-free` → Claude `haiku` | proven context compression, cheap refreshable quota |
-| `call-chain-trace` | agy `gemini-3.8-flash-high` | opencode `nemotron-3-ultra-free` → Claude `sonnet` | needs multi-hop reasoning, 1M ctx |
-| `research` | opencode `muse-spark-1.3-contributor-free` | opencode `mimo-v2.5-free` → agy `gemini-3.8-flash-medium` | zero cost, 1M ctx |
-| `triage` | opencode `muse-spark-1.3-contributor-free` | copilot `auto` | lowest latency (nemotron-3.5-lightning-free hangs — see opencode.md) |
+| `recon` | agy `gemini-3.8-flash-low` | opencode `@free` → Claude `haiku` | proven context compression, cheap refreshable quota |
+| `call-chain-trace` | agy `gemini-3.8-flash-high` | opencode `@free` → opencode `@go` → Claude `sonnet` | needs multi-hop reasoning, 1M ctx |
+| `research` | opencode `@free` (up to 2 models) | agy `gemini-3.8-flash-medium` | zero cost, 1M ctx |
+| `triage` | opencode `@free` | copilot `auto` | lowest latency |
 | `second-opinion` | agy `gemini-3.8-flash-high` | copilot `auto` | different model lineage than Claude Code |
 | `adversarial-review` | agy `claude-sonnet-4-6` **parallel with** copilot `auto` | agy `claude-opus-4-6-thinking` | dual blind review off the Claude Code quota |
 | `github-context` | copilot `auto` | — | built-in GitHub MCP; no second fallback (see copilot.md) |
-| `mechanical-edit` | agy `gemini-3.8-flash-medium` (write) | opencode `deepseek/deepseek-v4-flash` (write) → copilot `auto` (write) | cheap write-capable; single writer |
+| `mechanical-edit` | agy `gemini-3.8-flash-medium` (write) | opencode `@go` (write) → copilot `auto` (write) | cheap write-capable; single writer |
 | `implementation-with-repo-rules` | Claude `sonnet` (Agent tool) | — | only Claude Code loads CLAUDE.md + skills + hooks |
 | `architecture` | Claude `opus` (Agent tool) | agy `claude-opus-4-6-thinking` | highest reasoning |
 | `structured-mechanical` | Claude `haiku` (Agent tool) | — | cheapest Claude tier |
+| `ui-test` | agy `gemini-3.8-flash-high` | agy `claude-sonnet-4-6` | drives a real browser through Playwright MCP; requires `browser` (page must already be running) |
 
 Unknown `taskType` throws — call `route` with one of the exact strings above.
 
@@ -199,11 +200,12 @@ Unknown `taskType` throws — call `route` with one of the exact strings above.
   / `claude-opus-4-6-thinking` are Claude models hosted *inside* Antigravity — adversarial
   review and architecture judgment at zero Claude-quota cost. Full detail:
   `references/agents/agy.md`.
-- **opencode**: free tier (`opencode/muse-spark-1.3-contributor-free`,
-  `opencode/mimo-v2.5-free`, `opencode/big-pickle`) for research/recon fallback — zero cost,
-  but Meta trains on prompts (user-accepted, badge stays visible). Paid
-  `deepseek/deepseek-v4-flash` for write-mode mechanical edits; `opencode-go/*` is capped
-  ($12/5h, $30/wk, $60/mo, no usage API). Full detail: `references/agents/opencode.md`.
+- **opencode**: chains use pools, not model ids. `@free` (zero-cost catalog models) and `@go`
+  (OpenCode Go subscription) expand to the models the user allowed in the dashboard (Agents →
+  opencode models); undecided free models are allowed, Go and paid ones are blocked. An
+  explicit `delegate` to a model the policy blocks fails with `code: model_blocked`: do not
+  retry it, pick an allowed model or ask the user to allow it. Free models may train on
+  prompts (badge stays visible). Full detail: `references/agents/opencode.md`.
 - **copilot**: `--model` availability is subscription-specific — an explicit id can be rejected
   with `model_unavailable` even when it's listed in `help config`; treat any explicit id as
   unverified until an L3 ping confirms it, and default to `auto`, which is always accepted.
@@ -329,6 +331,11 @@ Claude Code subagents:
   - agy runs in a hub-managed scratch copy of your tree (uncommitted and untracked files
     included, removed after the job).
   - copilot/codex/opencode/gentle-shell run in place, because their CLIs enforce read-only.
+  - Browser evidence survives the scratch copy: a `ui-test` job's screenshots and page
+    snapshots (`.playwright-mcp/`) are saved to `runs/<jobId>/artifacts/` and listed in
+    `isolation.artifacts`, even when `.playwright-mcp/` is gitignored. Read them from there;
+    do not pass `isolation:'in-place'` just to keep screenshots. A path the agent quotes
+    inside the scratch dir is already gone.
   - If the tree changes during the run, the job still succeeds and reports
     `readGuard.level:'warn'` with the changed paths. Usually that is your own edit or a sibling
     job's, but the guard cannot tell who wrote it: check any path you did not touch.

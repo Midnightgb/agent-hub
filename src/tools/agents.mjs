@@ -10,13 +10,16 @@ import { quotaFor, getProvider } from '../quota/mapping.mjs'
 import { agyBrowserStatus, agyBrowserAvailable } from '../providers/agy-mcp.mjs'
 import { getAgysMode } from '../providers/agys.mjs'
 import { activeQuotaMark } from '../routing/quota-gate.mjs'
+import { expandChain } from '../model-policy.mjs'
 
 /**
  * The default set of agent+model pairs agents_status checks: every distinct
  * CLI pair (not Claude subagent tiers, which are not CLI-preflighted) named
- * anywhere in the delegation map, plus the explicit-only pairs.
+ * anywhere in the delegation map, plus the explicit-only pairs. opencode pool
+ * steps (`@free`, `@go`) are expanded to the models the policy allows
+ * (model-policy.mjs).
  */
-export function defaultPairs() {
+export function defaultPairs({ env = process.env } = {}) {
   const seen = new Set()
   const pairs = []
   const add = (c) => {
@@ -27,7 +30,7 @@ export function defaultPairs() {
     pairs.push({ agent: c.agent, model: c.model })
   }
   for (const entry of Object.values(DELEGATION_MAP)) {
-    for (const candidate of entry.chain) {
+    for (const candidate of expandChain(entry.chain, { env }).chain) {
       add(candidate)
       add(candidate.parallelWith)
     }
@@ -43,7 +46,7 @@ function exhaustedUntil({ agent, model }, env) {
 }
 
 export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), env = process.env, commandRunner = runCommand } = {}) {
-  const pairs = defaultPairs()
+  const pairs = defaultPairs({ env })
   // A manual refresh from an MCP client is worth showing in the dashboard
   // timeline too; a plain cache-served call stays silent.
   const results = await runAgentsStatus({ agents: pairs, cwd, env, refresh, commandRunner, announce: refresh })

@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { adapterFor } from '../src/adapters/index.mjs'
 import { AGY_GUARD_BLOCK } from '../src/adapters/agy.mjs'
+import { allowOpencodeModels } from './helpers/opencode-catalog.mjs'
 
 const AGY_QUOTA_FIXTURE = fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'agy', 'stream-quota-error.jsonl'),
@@ -14,7 +15,7 @@ const AGY_QUOTA_FIXTURE = fs.readFileSync(
 )
 
 function tmpHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-jobrunner-agys-'))
+  return allowOpencodeModels(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-jobrunner-agys-')), ['opencode/muse-spark-1.3-contributor-free'])
 }
 
 async function freshModules(home) {

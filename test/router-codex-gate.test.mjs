@@ -4,9 +4,11 @@ import { route } from '../src/router.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { seedOpencodeCatalog } from './helpers/opencode-catalog.mjs'
 
 function isolated(overrides = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-codex-gate-test-'))
+  seedOpencodeCatalog(tempDir)
   return {
     ...process.env,
     AGENT_HUB_HOME: tempDir,

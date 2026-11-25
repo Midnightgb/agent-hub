@@ -7,9 +7,10 @@ import { EventEmitter } from 'node:events'
 import { execFileSync } from 'node:child_process'
 import { extractLastJsonLine } from '../src/adapters/base.mjs'
 import { adapterFor } from '../src/adapters/index.mjs'
+import { allowOpencodeModels } from './helpers/opencode-catalog.mjs'
 
 function tmpHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-jobrunner-'))
+  return allowOpencodeModels(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-jobrunner-')), ['opencode/muse-spark-1.3-contributor-free', 'deepseek/deepseek-v4-flash'])
 }
 
 function git(args, cwd) {

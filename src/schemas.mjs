@@ -1202,6 +1202,22 @@ export const AgysProfile = z
   })
   .passthrough()
 
+// opencode-model-policy (S1): GET /api/model-policy (src/model-policy.mjs policyView).
+export const ModelPolicyModel = z.object({
+  id: z.string(),
+  pool: z.enum(['free', 'go', 'paid', 'unknown']),
+  allowed: z.boolean(),
+  source: z.enum(['user', 'default']),
+  isNew: z.boolean(),
+})
+
+export const ModelPolicyResponse = z.object({
+  agent: z.string(),
+  catalogAvailable: z.boolean(),
+  catalogCheckedAt: z.string().nullable(),
+  models: z.array(ModelPolicyModel),
+})
+
 export const AgysSnapshotResponse = z
   .object({
     available: z.boolean(),

@@ -6,6 +6,8 @@
 import type { z } from "zod"
 import type {
   AgentStatusRow,
+  ModelPolicyModel,
+  ModelPolicyResponse,
   JobRecord,
   HubEvent,
   StateResponse,
@@ -69,6 +71,8 @@ export type CatalogDriftItemT = z.infer<typeof CatalogDriftItem>
 export type LearningT = z.infer<typeof Learning>
 export type LearningInputT = z.infer<typeof LearningInput>
 export type AgysSnapshotResponseT = z.infer<typeof AgysSnapshotResponse>
+export type ModelPolicyModelT = z.infer<typeof ModelPolicyModel>
+export type ModelPolicyResponseT = z.infer<typeof ModelPolicyResponse>
 export type AgysProfileT = z.infer<typeof AgysProfile>
 export type AgysBucketT = z.infer<typeof AgysBucket>
 export type AgysModeInput = { mode: "off" | "profile" | "auto"; profile?: string | null }

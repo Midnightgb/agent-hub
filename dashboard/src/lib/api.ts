@@ -28,6 +28,7 @@ import {
   WorkGraphResponse,
   McpToolsResponse,
   AgysSnapshotResponse,
+  ModelPolicyResponse,
   DiffStatsResponse,
 } from "@shared"
 import type {
@@ -36,6 +37,7 @@ import type {
   MetricsResponseT,
   AgentsQuotaResponseT,
   AgysSnapshotResponseT,
+  ModelPolicyResponseT,
   ProposalT,
   ProposalsResponseT,
   LearningT,
@@ -184,6 +186,18 @@ export function setOverride(params: {
   reason?: string
 }): Promise<unknown> {
   return fetchJson(z.unknown(), "/api/overrides", writeInit("POST", params))
+}
+
+export function getModelPolicy(agent = "opencode"): Promise<ModelPolicyResponseT> {
+  return fetchJson(ModelPolicyResponse, `/api/model-policy?agent=${encodeURIComponent(agent)}`)
+}
+
+export function setModelDecision(params: { agent: string; model: string; allowed: boolean }): Promise<unknown> {
+  return fetchJson(z.unknown(), "/api/model-policy", writeInit("POST", params))
+}
+
+export function setModelOrder(params: { agent: string; order: string[] }): Promise<unknown> {
+  return fetchJson(z.unknown(), "/api/model-policy/order", writeInit("PUT", params))
 }
 
 export function clearOverride(agent: string, model: string): Promise<unknown> {

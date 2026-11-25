@@ -54,7 +54,7 @@ routes, so a link can open the exact filtered view:
 | Group | Route | Shows |
 |---|---|---|
 | Monitor | `#/overview` | What needs attention: unhealthy agents, open breakers, failures in the last 24h, unresolved CLIs, recent activity |
-| Monitor | `#/agents?filter=all\|unhealthy\|held\|breaker&q=` | Agents grouped by CLI; filter, free-text search, row menu, detail panel |
+| Monitor | `#/agents?filter=all\|unhealthy\|held\|breaker&q=` | Agents grouped by CLI; filter, free-text search, row menu, detail panel; **opencode models** panel to allow/block catalog models and set their priority (`model-policy.json`) |
 | Monitor | `#/jobs` | Running and queued jobs with live elapsed time, job profile badge, diff stats, and Cancel |
 | Monitor | `#/history?status=&agent=&q=` | Terminal jobs; `status=failed\|succeeded\|canceled`, agent filter, free-text search, error detail, job profile badge, diff stats, reply chains |
 | Monitor | `#/providers` | agys multi-account profiles, quotas, active mode toggle (`off`\|`profile`\|`auto`), and profile selector |
