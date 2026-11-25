@@ -189,6 +189,7 @@ files, you paid two quotas for one answer. Delegate when the answer is a *locati
 | `implementation-with-repo-rules` | Claude `sonnet` (Agent tool) | — | only Claude Code loads CLAUDE.md + skills + hooks |
 | `architecture` | Claude `opus` (Agent tool) | agy `claude-opus-4-6-thinking` | highest reasoning |
 | `structured-mechanical` | Claude `haiku` (Agent tool) | — | cheapest Claude tier |
+| `ui-test` | agy `gemini-3.8-flash-high` | agy `claude-sonnet-4-6` | drives a real browser through Playwright MCP; requires `browser` (page must already be running) |
 
 Unknown `taskType` throws — call `route` with one of the exact strings above.
 
@@ -330,6 +331,11 @@ Claude Code subagents:
   - agy runs in a hub-managed scratch copy of your tree (uncommitted and untracked files
     included, removed after the job).
   - copilot/codex/opencode/gentle-shell run in place, because their CLIs enforce read-only.
+  - Browser evidence survives the scratch copy: a `ui-test` job's screenshots and page
+    snapshots (`.playwright-mcp/`) are saved to `runs/<jobId>/artifacts/` and listed in
+    `isolation.artifacts`, even when `.playwright-mcp/` is gitignored. Read them from there;
+    do not pass `isolation:'in-place'` just to keep screenshots. A path the agent quotes
+    inside the scratch dir is already gone.
   - If the tree changes during the run, the job still succeeds and reports
     `readGuard.level:'warn'` with the changed paths. Usually that is your own edit or a sibling
     job's, but the guard cannot tell who wrote it: check any path you did not touch.
