@@ -461,6 +461,50 @@ test('a scratch read job keeps its browser artifacts (.playwright-mcp/) in the r
   assert.equal(fs.existsSync(result.isolation.dir), false, 'the scratch copy is still removed')
 })
 
+test('a scratch read job keeps browser artifacts even when .playwright-mcp/ is gitignored', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'ignored.txt\n.playwright-mcp/\n')
+  fs.mkdirSync(path.join(repo, '.playwright-mcp'))
+  fs.writeFileSync(path.join(repo, '.playwright-mcp', 'old.png'), 'OLD')
+  git(['add', '-A'], repo)
+  git(['commit', '-q', '-m', 'ignore playwright output'], repo)
+  const { startJob, jobstore } = await freshModules(home)
+  const script = [
+    "const fs = require('fs')",
+    "fs.mkdirSync('.playwright-mcp', { recursive: true })",
+    "fs.writeFileSync('.playwright-mcp/page.png', 'PNGDATA')",
+    respond('"PONG"'),
+  ].join('; ')
+  const { job, done } = run(startJob, { adapter: fakeAdapter(script, 'scratch'), cwd: repo })
+  await done
+
+  const result = jobstore.readResult(job.jobId)
+  assert.equal(result.status, 'succeeded', result.error)
+  const artifactsDir = path.join(path.dirname(jobstore.stdoutPath(job.jobId)), 'artifacts')
+  assert.deepEqual(result.isolation.artifacts, [path.join(artifactsDir, '.playwright-mcp', 'page.png')], 'a file the job did not write is not kept')
+  assert.equal(fs.readFileSync(result.isolation.artifacts[0], 'utf8'), 'PNGDATA')
+  assert.equal(fs.existsSync(path.join(repo, '.playwright-mcp', 'page.png')), false, 'nothing reaches the caller tree')
+})
+
+test('a scratch read job that deletes a tracked .playwright-mcp file records no artifact warning', async () => {
+  const home = tmpHome()
+  const repo = makeRepo()
+  fs.mkdirSync(path.join(repo, '.playwright-mcp'))
+  fs.writeFileSync(path.join(repo, '.playwright-mcp', 'stale.yml'), 'old')
+  git(['add', '-A'], repo)
+  git(['commit', '-q', '-m', 'tracked snapshot'], repo)
+  const { startJob, jobstore } = await freshModules(home)
+  const script = ["require('fs').rmSync('.playwright-mcp/stale.yml')", respond('"PONG"')].join('; ')
+  const { job, done } = run(startJob, { adapter: fakeAdapter(script, 'scratch'), cwd: repo })
+  await done
+
+  const result = jobstore.readResult(job.jobId)
+  assert.equal(result.status, 'succeeded', result.error)
+  assert.deepEqual(result.isolation.artifacts, [])
+  assert.ok(!(result.warnings ?? []).some((w) => w.includes('could not keep artifact')), JSON.stringify(result.warnings))
+})
+
 test('a scratch read job without browser artifacts records an empty artifacts list', async () => {
   const home = tmpHome()
   const repo = makeRepo()

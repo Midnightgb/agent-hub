@@ -261,7 +261,9 @@ reported as `isolation.discardedPaths` and thrown away. The one exception is
 browser evidence: files written under `.playwright-mcp/` (Playwright MCP
 screenshots and page snapshots) are first copied to
 `runs/<jobId>/artifacts/`, keeping their relative paths, and listed as
-`isolation.artifacts`. The caller's tree and index are only read
+`isolation.artifacts`. The directory is read from disk, so this works when
+`.playwright-mcp/` is gitignored; files identical to the caller's tree are not
+kept. The caller's tree and index are only read
 (`git --no-optional-locks`).
 
 What the copy cannot stop: an agent that writes to an **absolute path** inside

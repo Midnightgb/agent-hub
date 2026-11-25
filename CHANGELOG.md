@@ -37,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Read jobs in a scratch copy keep their browser artifacts: files written
   under `.playwright-mcp/` (Playwright MCP screenshots and page snapshots) are
   copied to `runs/<jobId>/artifacts/` before the copy is removed and listed in
-  `isolation.artifacts`. A failed copy only adds a warning to the job.
+  `isolation.artifacts`, also when `.playwright-mcp/` is gitignored. A failed
+  copy only adds a warning to the job.
 - Browser capability for agy: a new `browser` capability key, true for agy
   only when the agy MCP config the job will use (base `~/.gemini` or the agys
   profile's own) has an enabled Playwright MCP server. `agents_status` agy rows
