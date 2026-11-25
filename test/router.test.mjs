@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { seedOpencodeCatalog, SEEDED_FREE_MODEL } from './helpers/opencode-catalog.mjs'
 
 function tmpHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-router-'))
+  return seedOpencodeCatalog(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-router-')))
 }
 
 async function fresh(home) {
@@ -28,11 +29,11 @@ test('route includes Claude subagent tiers as {agent:"claude", model} entries wh
   assert.equal(result.primary.model, 'sonnet')
 })
 
-test('mechanical-edit prefers agy (write mode) before the paid deepseek candidate', async () => {
+test('mechanical-edit prefers agy (write mode) before an OpenCode Go model', async () => {
   const { DELEGATION_MAP } = await fresh(tmpHome())
   const chain = DELEGATION_MAP['mechanical-edit'].chain
   assert.deepEqual(chain[0], { agent: 'agy', model: 'gemini-3.8-flash-medium', mode: 'write' })
-  assert.equal(chain[1].model, 'deepseek/deepseek-v4-flash')
+  assert.deepEqual(chain[1], { agent: 'opencode', model: '@go', mode: 'write' })
 })
 
 test('route skips a pair whose cached preflight is unavailable, promoting the next fallback', async () => {
@@ -233,7 +234,9 @@ test('route() applies an accepted proposal, reordering the chain and returning a
   const result = await route({ taskType: 'recon' })
   assert.deepEqual(result.appliedProposal, { id: 'prop-recon-1' })
   assert.equal(result.primary.agent, cli[1].agent)
-  assert.equal(result.primary.model, cli[1].model)
+  // The proposal reorders the declared chain; route() then expands the @free pool.
+  assert.equal(cli[1].model, '@free')
+  assert.equal(result.primary.model, SEEDED_FREE_MODEL)
 })
 
 test('route() ignores an accepted proposal whose chainHash is stale (DELEGATION_MAP changed underneath it)', async () => {

@@ -13,9 +13,10 @@ import {
 } from '../src/dispatch.mjs'
 import { createJob, listJobs, readResult } from '../src/jobstore.mjs'
 import { paths, ADAPTIVE_TIMEOUT } from '../src/config.mjs'
+import { allowOpencodeModels } from './helpers/opencode-catalog.mjs'
 
 function makeTempHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-dispatch-test-'))
+  const home = allowOpencodeModels(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-dispatch-test-')), ['opencode/test'])
   const env = { ...process.env, AGENT_HUB_HOME: home }
   return { home, env, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) }
 }

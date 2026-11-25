@@ -403,7 +403,9 @@ export function buildServer({ env = process.env, deps = {}, taskPollMs = 500 } =
       title: 'Agent CLI health',
       description:
         `Preflight (L0-L2, no ping) every agy/opencode/copilot/codex model in the delegation map. ` +
-        `Returns ready|degraded|unavailable with reason, latency, an advisory quota/dataPolicy badge.`,
+        `Returns ready|degraded|unavailable with reason, latency, an advisory quota/dataPolicy badge. ` +
+        `Also lists every model the live agy/opencode/gentle-shell catalogs expose (source:'discovery', L1 ready); ` +
+        `a pinned model no longer listed carries the discovered 'successor' route() substitutes for it.`,
       inputSchema: { refresh: z.boolean().optional().describe('Bypass the 15-minute cache and re-run the ladder.') },
       outputSchema: AgentsStatusResponse,
       annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },

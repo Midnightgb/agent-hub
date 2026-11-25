@@ -39,17 +39,27 @@ passes availability filtering, plus the rest as fallbacks:
 
 | Task type | Primary | Fallbacks | Why |
 |---|---|---|---|
-| `recon` | agy gemini-3.8-flash-low | opencode muse-spark-1.3 → claude haiku | proven context compression, cheap refreshable quota |
-| `call-chain-trace` | agy gemini-3.8-flash-high | opencode nemotron-3-ultra → claude sonnet | needs multi-hop reasoning, 1M ctx |
-| `research` | opencode muse-spark-1.3 | opencode mimo-v2.5 → agy gemini-3.8-flash-medium | zero cost, 1M ctx |
-| `triage` | opencode muse-spark-1.3 | copilot auto → codex default | lowest latency |
+| `recon` | agy gemini-3.8-flash-low | opencode `@free` → claude haiku | proven context compression, cheap refreshable quota |
+| `call-chain-trace` | agy gemini-3.8-flash-high | opencode `@free` → opencode `@go` → claude sonnet | needs multi-hop reasoning, 1M ctx |
+| `research` | opencode `@free` (up to 2 models) | agy gemini-3.8-flash-medium | zero cost, 1M ctx |
+| `triage` | opencode `@free` | copilot auto → codex default | lowest latency |
 | `second-opinion` | agy gemini-3.8-flash-high | copilot auto | different model lineage than Claude Code |
 | `adversarial-review` | agy claude-sonnet-4-6 (parallel with copilot auto) | agy claude-opus-4-6-thinking | dual blind review off the Claude Code quota |
 | `github-context` | copilot auto | — | built-in GitHub MCP; cheap models keep premium quota |
-| `mechanical-edit` | agy gemini-3.8-flash-medium (write) | opencode deepseek-v4-flash (write) → copilot auto (write) → codex default (write) | cheap write-capable; single writer |
+| `mechanical-edit` | agy gemini-3.8-flash-medium (write) | opencode `@go` (write) → copilot auto (write) → codex default (write) | cheap write-capable; single writer |
 | `implementation-with-repo-rules` | claude sonnet | — | only Claude Code loads CLAUDE.md + skills + hooks |
 | `architecture` | claude opus | agy claude-opus-4-6-thinking | highest reasoning |
 | `structured-mechanical` | claude haiku | — | cheapest Claude tier |
+
+`@free` and `@go` are opencode **pools**, not model ids: `route()` expands each one to the
+models the user allowed in the dashboard (`model-policy.json`), in the user's order, at most 2.
+An empty pool is skipped as `pool_empty`; a concrete opencode step the policy blocks (for
+example one appended by an accepted proposal) is skipped as `model_blocked`. `call-chain-trace`
+tries `@free` before `@go` so the Go subscription is only spent once the allowed free models are
+exhausted. The same policy gates `gentle-shell` when its model is `opencode-go/*` (it spends the
+same opencode Go quota): such a job is rejected before launch with `code: model_blocked` unless
+that model is allowed for opencode in the dashboard. See
+[providers/opencode.md](providers/opencode.md#models-the-dashboard-decides-model-policy).
 | `ui-test` | agy gemini-3.8-flash-high | agy claude-sonnet-4-6 | requires `browser`; drives a Playwright MCP server ([setup](providers/agy.md#browser--ui-testing-ui-test)) |
 
 Codex is only ever a last fallback, for small bounded tasks: its plan quota is
@@ -212,6 +222,30 @@ accepted `add_candidate` pair as reachable, the same as a static chain step.
 `GET /api/proposals` and `POST /api/proposals/refresh` also return an
 `unmapped` list (`[{agent, model}]`) of catalog models with no safe taskType,
 rendered in the dashboard's Proposals panel alongside the proposal list.
+
+A trailing `-YYYYMMDD` run is a snapshot date, not a version: it is returned
+as `snapshot` and dropped from `version`, so `claude-sonnet-4-20250514` is
+version `[4]` and never counts as newer than `claude-sonnet-4-6`.
+
+### Vanished-pin substitution
+
+A pinned id (a concrete, non-pool chain step of agy, opencode or
+gentle-shell, including an accepted `add_candidate` step) that its CLI's live
+catalog no longer lists is swapped at `route()` time for its **successor**: the newest catalog
+model of the same family and effort suffix (provider prefix ignored), never a
+lower version, never a dated snapshot over a non-dated release, and never a
+paid model for a free pin (`src/model-successors.mjs`). Absence of evidence
+never substitutes: an errored or empty catalog keeps the pin. The substitute
+takes the vanished candidate's exact slot (after accepted reorders) and
+carries `substitutedFrom: <pinned id>`; `route()` returns every swap in
+`substitutions` and logs one `preflight`/`substitution` event per swap.
+A hold on the pinned id is honored: that candidate is not substituted and is
+skipped as `held`. Pool steps (`@free`, `@go`) are left untouched; they are
+expanded afterwards by the opencode model policy, which also gates any
+substituted opencode id. `agents_status` shows the successor of a stale pin as
+`successor`, and lists other discovered catalog models as
+`source: 'discovery'` rows, except opencode models the model policy blocks. This is the only automatic model change: any other new model
+still enters a chain only through an accepted `add_candidate` proposal.
 
 ## Learnings
 

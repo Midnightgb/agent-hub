@@ -389,6 +389,11 @@ export const AgentStatusRow = z
     tier: nullableString,
     tierSource: z.enum(['catalog', 'registry']).nullable().optional(),
     catalogCheckedAt: nullableString,
+    // 'discovery' for a model listed by the CLI's live catalog but pinned
+    // nowhere (not preflighted per pair: its CLI's own discovery succeeded).
+    source: z.enum(['preflight', 'discovery']).optional(),
+    // Pinned model no longer listed: the discovered model route() uses instead.
+    successor: nullableString.optional(),
     // agy rows only: whether each agy MCP config (base HOME + every agys
     // profile) has an enabled Playwright server, and whether the config the
     // current agys mode would use does (`available`, the 'browser' capability).
@@ -689,6 +694,9 @@ export const RouteResult = z
     discovery: z.record(z.string(), z.union([DiscoverySummary, DiscoveryEntry]).nullable()),
     reason: z.string(),
     appliedProposal: z.object({ id: z.string() }).passthrough().nullable().optional(),
+    // Pinned chain models no longer listed by their CLI, auto-replaced by the
+    // discovered successor (src/model-successors.mjs).
+    substitutions: z.array(z.object({ agent: z.string(), from: z.string(), to: z.string() })).optional(),
   })
   .passthrough()
 
@@ -1194,6 +1202,22 @@ export const AgysProfile = z
     quota: AgysProfileQuota,
   })
   .passthrough()
+
+// opencode-model-policy (S1): GET /api/model-policy (src/model-policy.mjs policyView).
+export const ModelPolicyModel = z.object({
+  id: z.string(),
+  pool: z.enum(['free', 'go', 'paid', 'unknown']),
+  allowed: z.boolean(),
+  source: z.enum(['user', 'default']),
+  isNew: z.boolean(),
+})
+
+export const ModelPolicyResponse = z.object({
+  agent: z.string(),
+  catalogAvailable: z.boolean(),
+  catalogCheckedAt: z.string().nullable(),
+  models: z.array(ModelPolicyModel),
+})
 
 export const AgysSnapshotResponse = z
   .object({

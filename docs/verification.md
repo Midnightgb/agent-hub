@@ -65,7 +65,7 @@ response.
   id: 'implementation',
   type: 'delegate',
   agent: 'opencode',
-  model: 'deepseek/deepseek-v4-flash',
+  model: 'opencode-go/glm-5.3', // must be allowed in the dashboard model policy
   mode: 'write',
   artifacts: ['plan.md', 'diff.patch', 'test-report.json'],
   task: 'Implement the feature. Baseline brief: artifact://research/plan.md',

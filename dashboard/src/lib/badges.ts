@@ -162,6 +162,9 @@ const STATUS_BADGES: Record<string, StatusBadgeSpec> = {
   succeeded: { label: "Succeeded", tone: "ready", icon: "check" },
   failed: { label: "Failed", tone: "destructive", icon: "error" },
   canceled: { label: "Canceled", tone: "muted", icon: "pause" },
+  // opencode model policy (Agents view): a user choice, not a failure.
+  allowed: { label: "Allowed", tone: "ready", icon: "check" },
+  blocked: { label: "Blocked", tone: "muted", icon: "pause" },
 }
 
 /** Status badge spec for an AgentStatus or JobStatus value. */

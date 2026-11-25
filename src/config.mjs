@@ -34,6 +34,8 @@ export function paths(env = process.env) {
     preflightCacheFile: path.join(home, 'preflight-cache.json'),
     discoveryFile: path.join(home, 'discovery.json'),
     overridesFile: path.join(home, 'overrides.json'),
+    // Which opencode models the user allows (dashboard Agents view); see model-policy.mjs.
+    modelPolicyFile: path.join(home, 'model-policy.json'),
     proposalsFile: path.join(home, 'proposals.json'),
     // Recurring Jules tasks. Owned by the long-lived dashboard process, which
     // is the only process here that outlives a Claude session (see scheduler.mjs).
@@ -225,6 +227,16 @@ export const SANDBOX = {
     isolated: { inheritHome: false, redactEnv: true },
   },
 }
+
+/**
+ * Provider tie-break for model auto-substitution (src/model-successors.mjs)
+ * when a pinned id vanished and several providers list its successor at the
+ * same version: earlier wins. opencode-go is the capped subscription plan
+ * ($12/5h), preferred over pay-per-token opencode Zen / direct providers.
+ */
+export const SUCCESSOR_PROVIDER_PREFERENCE = Object.freeze({
+  opencode: Object.freeze(['opencode-go', 'opencode']),
+})
 
 export function resolveVariant(agent, model, override) {
   if (override) return override

@@ -4,9 +4,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { resetSyncProfileCache } from '../src/providers/agys.mjs'
+import { seedOpencodeCatalog } from './helpers/opencode-catalog.mjs'
 
 function tmpHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-router-agys-'))
+  return seedOpencodeCatalog(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-router-agys-')))
 }
 
 async function fresh(home) {

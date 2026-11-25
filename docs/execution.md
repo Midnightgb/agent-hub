@@ -334,8 +334,14 @@ read-only through alternates but has its own refs, config and index and no
 commands the agent runs in the copy (commit, branch, config) never reach the
 caller. The CLI runs in the same subdirectory of the copy as the caller's
 `cwd`, and the copy is removed when the job ends; what the agent wrote there is
-reported as `isolation.discardedPaths` and thrown away. The caller's tree and
-index are only read (`git --no-optional-locks`).
+reported as `isolation.discardedPaths` and thrown away. The one exception is
+browser evidence: files written under `.playwright-mcp/` (Playwright MCP
+screenshots and page snapshots) are first copied to
+`runs/<jobId>/artifacts/`, keeping their relative paths, and listed as
+`isolation.artifacts`. The directory is read from disk, so this works when
+`.playwright-mcp/` is gitignored; files identical to the caller's tree are not
+kept. The caller's tree and index are only read
+(`git --no-optional-locks`).
 
 What the copy cannot stop: an agent that writes to an **absolute path** inside
 the caller's tree. The warn guard on the caller's tree reports that as

@@ -90,28 +90,34 @@ on an already-finished session. It is best-effort — it never changes the job's
 is recorded as a `job.interrupted` event, not folded into `job.failed`. No other adapter (`agy`,
 `copilot`, `codex`, `jules`) defines this hook, so this is opencode-only (upstream issue #48683).
 
-## Models
+## Models: the dashboard decides (model policy)
 
-Free tier, cost 0 (Meta trains on prompts for at least one of these — user has explicitly
-accepted "no restriction"; the `dataPolicy` badge in `agents_status`/dashboard still shows it,
-it just never blocks routing):
+opencode's catalog churns: free models are renamed or retired every few weeks. So no
+opencode model id is pinned in `DELEGATION_MAP`. Chains name a **pool** instead, and the user
+chooses in the dashboard (**Agents → opencode models**) which catalog models agent-hub may use.
+The choice is stored in `$AGENT_HUB_HOME/model-policy.json` and survives reinstalls.
 
-| Model | dataPolicy | Use it for |
+| Pool | Catalog models in it | Default for a model nobody decided yet |
 |---|---|---|
-| `opencode/muse-spark-1.3-contributor-free` | trains | research/recon fallback, brainstorming, 1M ctx — **verified working** in live tests, defaults to the `#high` variant suffix (`MODEL_REGISTRY` default); a live ping with `-m opencode/muse-spark-1.3-contributor-free#high --agent plan` answered correctly. |
-| `opencode/nemotron-3-ultra-free` | logs | call-chain-trace fallback |
-| `opencode/mimo-v2.5-free` | logs | library/docs research |
-| `opencode/big-pickle` | logs | general purpose free fallback |
-| `opencode/nemotron-3.5-lightning-free` | logs | **do not use as primary** — hung indefinitely (full 90s timeout, SIGKILLed) in live testing 2026-09-11, despite being a real listed model id. `muse-spark-1.3-contributor-free` answered the same prompt in ~3s. |
+| `@free` | catalog cost is zero (`opencode/*-free`, some `opencode-go/*`) | **allowed** |
+| `@go` | `opencode-go/*` with a price or no price data (the OpenCode Go subscription) | **blocked** until allowed |
+| — (paid) | any other priced model (`opencode/*`, `deepseek/*`) | **blocked**; never routed, only usable through an explicit `delegate` once allowed |
 
-Paid (availability depends on which providers your opencode account has configured; example
-below is one working set):
+- `route()` expands a pool to the allowed models the live catalog lists, in the order set in
+  the dashboard (at most 2 per pool). A pool with nothing allowed is reported in `skipped` as
+  `pool_empty` and the chain falls through to the next agent.
+- Pools per task type: `recon`, `research`, `triage` → `@free`; `call-chain-trace` → `@free` then `@go`
+  then `@free`; `mechanical-edit` (write) → `@go`.
+- Any job on an opencode model the policy does not allow is rejected before launch with an
+  error whose `code` is `model_blocked` (delegate, plans, assignments, replies). A
+  `model#variant` id is judged by its base model. Allowing a Go or paid model in the
+  dashboard asks for confirmation, because it spends quota.
+- A model the catalog does not list (or no catalog at all) is blocked unless you allowed it
+  explicitly.
 
-| Model | Use it for |
-|---|---|
-| `deepseek/deepseek-v4-pro` | general purpose paid |
-| `deepseek/deepseek-v4-flash` | mechanical-edit write jobs — cheap, write-capable |
-| `opencode-go/*` | capped $12/5h · $30/week · $60/month, **no usage API** — track spend manually |
+Free-tier models may train on prompts (Meta does for at least one): the `dataPolicy` badge in
+`agents_status`/dashboard still shows it. `opencode-go/*` is capped ($12/5h · $30/week ·
+$60/month) and its usage is read through CodexBar provider `opencodego` when available.
 
 ## Health / quota signal
 
@@ -134,8 +140,8 @@ below is one working set):
 1. Free-model prompts are not private by default — accepting the free tier's data-training terms
    is a deliberate per-user choice, not an oversight to fix. Never route a task containing
    secrets/`.env`/credentials to any agent regardless of tier.
-2. A job that appears to hang past its timeout is likely `nemotron-3.5-lightning-free` — do not
-   retry the same model, switch to `muse-spark-1.3-contributor-free`.
+2. A free model can hang past its timeout (`nemotron-3.5-lightning-free` did in live tests) —
+   do not retry the same model: block it in the dashboard so its pool moves to the next one.
 3. Cancel is not instant: the hub's own SIGINT is only best-effort at stopping server-side work
    (see Cancellation above), and if it doesn't land, `job_cancel` still takes as long as the
    SIGTERM/SIGKILL grace period before the process group is confirmed gone locally. Note the

@@ -3,19 +3,23 @@ import { route as defaultRoute, DELEGATION_MAP, EXPLICIT_ONLY_PAIRS, knownTaskTy
 import { MODEL_REGISTRY } from '../config.mjs'
 import { readDiscovery } from '../discovery.mjs'
 import { effectiveTier } from '../catalog.mjs'
+import { findSuccessor, hasGoodCatalog, SUCCESSOR_AGENTS } from '../model-successors.mjs'
 import { runCommand } from '../process.mjs'
 import { fetchUsage } from '../quota/codexbar.mjs'
 import { quotaFor, getProvider } from '../quota/mapping.mjs'
 import { agyBrowserStatus, agyBrowserAvailable } from '../providers/agy-mcp.mjs'
 import { getAgysMode } from '../providers/agys.mjs'
 import { activeQuotaMark } from '../routing/quota-gate.mjs'
+import { expandChain, modelDecision } from '../model-policy.mjs'
 
 /**
  * The default set of agent+model pairs agents_status checks: every distinct
  * CLI pair (not Claude subagent tiers, which are not CLI-preflighted) named
- * anywhere in the delegation map, plus the explicit-only pairs.
+ * anywhere in the delegation map, plus the explicit-only pairs. opencode pool
+ * steps (`@free`, `@go`) are expanded to the models the policy allows
+ * (model-policy.mjs).
  */
-export function defaultPairs() {
+export function defaultPairs({ env = process.env } = {}) {
   const seen = new Set()
   const pairs = []
   const add = (c) => {
@@ -26,7 +30,7 @@ export function defaultPairs() {
     pairs.push({ agent: c.agent, model: c.model })
   }
   for (const entry of Object.values(DELEGATION_MAP)) {
-    for (const candidate of entry.chain) {
+    for (const candidate of expandChain(entry.chain, { env }).chain) {
       add(candidate)
       add(candidate.parallelWith)
     }
@@ -42,7 +46,7 @@ function exhaustedUntil({ agent, model }, env) {
 }
 
 export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), env = process.env, commandRunner = runCommand } = {}) {
-  const pairs = defaultPairs()
+  const pairs = defaultPairs({ env })
   // A manual refresh from an MCP client is worth showing in the dashboard
   // timeline too; a plain cache-served call stays silent.
   const results = await runAgentsStatus({ agents: pairs, cwd, env, refresh, commandRunner, announce: refresh })
@@ -61,12 +65,15 @@ export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), e
     ? { available: agyBrowserAvailable(getAgysMode(env), env), ...agyBrowserStatus(env) }
     : null
 
-  return results.map((r) => {
+  const pinnedRows = results.map((r) => {
     const { tier, tierSource, catalogCheckedAt } = effectiveTier({ agent: r.agent, model: r.model, discovery, registry: MODEL_REGISTRY })
+    const successor = r.status === 'unavailable' ? findSuccessor({ agent: r.agent, model: r.model, discovery, registry: MODEL_REGISTRY }) : null
     return {
       agent: r.agent,
       model: r.model,
       status: r.status,
+      source: 'preflight',
+      ...(successor ? { successor } : {}),
       reason: r.reason ?? null,
       latencyMs: r.latencyMs ?? null,
       quotaSignal: r.quotaSignal ?? 'unknown',
@@ -89,6 +96,49 @@ export async function agentsStatusTool({ refresh = false, cwd = process.cwd(), e
       ...(r.agent === 'agy' && agyBrowser ? { browser: agyBrowser } : {}),
     }
   })
+
+  return [...pinnedRows, ...discoveredRows(pairs, discovery, env)]
+}
+
+/**
+ * Auto-discovery: every model the live catalog of an authoritative agent
+ * (agy, opencode, gentle-shell) lists that no pinned pair already covers, as
+ * a 'ready' L1 row. Not preflighted per pair: the agent's discovery run
+ * already passed L0 (--version) and the listing itself is L1, and spawning
+ * --version for dozens of catalog models would make agents_status crawl.
+ */
+function discoveredRows(pairs, discovery, env) {
+  const pinned = new Set(pairs.map((p) => `${p.agent}:${p.model}`))
+  const rows = []
+  for (const agent of SUCCESSOR_AGENTS) {
+    const row = discovery[agent]
+    if (!hasGoodCatalog(row)) continue
+    for (const m of row.models) {
+      if (pinned.has(`${agent}:${m.id}`)) continue
+      // A model the opencode model policy blocks is never offered (same rule
+      // as the pinned pairs: expandChain never checks a blocked model).
+      if (!modelDecision({ agent, model: m.id, env, discovery }).allowed) continue
+      const { tier, tierSource, catalogCheckedAt } = effectiveTier({ agent, model: m.id, discovery, registry: MODEL_REGISTRY })
+      rows.push({
+        agent,
+        model: m.id,
+        status: 'ready',
+        source: 'discovery',
+        reason: null,
+        ladderLevel: 'L1',
+        latencyMs: null,
+        quotaSignal: 'unknown',
+        dataPolicy: MODEL_REGISTRY[agent]?.[m.id]?.dataPolicy ?? 'unknown',
+        checkedAt: row.checkedAt ?? null,
+        binPath: row.binPath ?? null,
+        cliVersion: row.version ?? null,
+        tier,
+        tierSource,
+        catalogCheckedAt,
+      })
+    }
+  }
+  return rows
 }
 
 export async function routeTool({
