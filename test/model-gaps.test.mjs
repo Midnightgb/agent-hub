@@ -123,3 +123,20 @@ test('computeModelGaps: same model used with different modes yields separate bum
 test('computeModelGaps: empty discovery/map/registry returns empty result', () => {
   assert.deepEqual(computeModelGaps({}), { versionBumps: [], unmapped: [] })
 })
+
+test('parseModelId: non-dated ids parse as before; a trailing YYYYMMDD is a snapshot date, not a version', async () => {
+  const { parseModelId } = await import('../src/model-gaps.mjs')
+  assert.deepEqual(parseModelId('gemini-3.8-flash-low'), { family: 'gemini-*-flash', version: [3, 8], effort: 'low' })
+  assert.deepEqual(parseModelId('claude-sonnet-4-6'), { family: 'claude-sonnet-*', version: [4, 6], effort: null })
+  const dated = parseModelId('claude-sonnet-4-20250514')
+  assert.equal(dated.family, 'claude-sonnet-*')
+  assert.deepEqual(dated.version, [4])
+  assert.equal(dated.snapshot, '20250514')
+})
+
+test('computeModelGaps: a dated snapshot never counts as a version bump over a non-dated id', () => {
+  const map = { x: { why: 'x', chain: [{ agent: 'agy', model: 'claude-sonnet-4-5', mode: 'read' }] } }
+  const discovery = { agy: { models: [{ id: 'claude-sonnet-4-20250514' }] } }
+  const gaps = computeModelGaps({ discovery, map, registry: {} })
+  assert.deepEqual(gaps.versionBumps, [])
+})

@@ -1,4 +1,5 @@
-import { CIRCUIT_BREAKER_BY_CLASS } from './config.mjs'
+import { CIRCUIT_BREAKER_BY_CLASS, MODEL_REGISTRY } from './config.mjs'
+import { substituteChain } from './model-successors.mjs'
 import { readCache } from './preflight.mjs'
 import { circuitBreakerOpen } from './breakers.mjs'
 import { readDiscovery } from './discovery.mjs'
@@ -258,7 +259,21 @@ export async function route({
   const effective = effectiveChainFor(taskType, entry.chain, env)
   const applied = acceptedOrderFor(taskType, env, { chain: effective })
   const declared = applied ? applied.chain : effective
-  const { chain, emptyPools } = expandChain(declared, { env })
+  // Pinned ids that vanished from their CLI's live catalog are swapped for
+  // the discovered successor (src/model-successors.mjs) AFTER ordering, so
+  // the substitute takes the vanished candidate's exact slot in the chain.
+  // Pool steps (`@free`/`@go`) are left alone and expanded afterwards, so a
+  // substituted id is still subject to the opencode model policy. A hold on
+  // the pinned id is honored: that candidate is not substituted, so
+  // evaluateCandidate() skips it as `held`.
+  const overrides = readOverrides(env)
+  const { chain: substituted, substitutions } = substituteChain(declared, {
+    discovery: readDiscovery(env),
+    registry: MODEL_REGISTRY,
+    env,
+    isHeld: (agent, model) => overrides[overrideKey(agent, model)]?.hold === true,
+  })
+  const { chain, emptyPools } = expandChain(substituted, { env })
   const appliedProposal = applied ? { id: applied.proposalId } : null
 
   const evaluated = chain.map((c) => ({ candidate: c, ...evaluateCandidate(c, env) }))
@@ -311,6 +326,7 @@ export async function route({
       ranking: [],
       reason: `every candidate for "${taskType}" is unavailable: ${detail} (${entry.why})`,
       appliedProposal,
+      substitutions,
     }
   }
 
@@ -419,6 +435,7 @@ export async function route({
       ranking: [],
       reason: `every candidate for "${taskType}" is unavailable: ${detail} (${entry.why})`,
       appliedProposal,
+      substitutions,
     }
   }
 
@@ -449,6 +466,7 @@ export async function route({
     ranking,
     reason: entry.why,
     appliedProposal,
+    substitutions,
   }
 }
 

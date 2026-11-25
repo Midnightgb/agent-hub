@@ -18,6 +18,9 @@ const ELIGIBLE_AGENTS = ['agy', 'opencode']
 // shorter ones, but none here are prefixes of each other.
 const EFFORT_SUFFIXES = ['minimal', 'low', 'medium', 'high', 'max']
 
+// A trailing "-YYYYMMDD" snapshot date (e.g. claude-sonnet-4-20250514).
+const SNAPSHOT_DATE = /-((?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$/
+
 /**
  * Splits a model id into {family, version, effort}. `family` replaces the
  * first digit run with a `*` wildcard so two ids differ only in that run
@@ -30,6 +33,12 @@ const EFFORT_SUFFIXES = ['minimal', 'low', 'medium', 'high', 'max']
  *   'claude-sonnet-4-6'     -> { family: 'claude-sonnet-*', version: [4,6], effort: null }
  *   'opencode/muse-spark-1.3-contributor-free'
  *                           -> { family: 'opencode/muse-spark-*-contributor-free', version: [1,3], effort: null }
+ *
+ * A trailing "-YYYYMMDD" run is a snapshot date, not a version: it is
+ * stripped before the version scan and returned as `snapshot` (the key is
+ * only present on dated ids), so a dated snapshot never outranks a newer
+ * non-dated release:
+ *   'claude-sonnet-4-20250514' -> { family: 'claude-sonnet-*', version: [4], effort: null, snapshot: '20250514' }
  */
 export function parseModelId(id) {
   let rest = id
@@ -42,13 +51,17 @@ export function parseModelId(id) {
     }
   }
 
+  const dateMatch = rest.match(SNAPSHOT_DATE)
+  const snapshot = dateMatch ? { snapshot: dateMatch[1] } : {}
+  if (dateMatch) rest = rest.slice(0, dateMatch.index)
+
   const versionMatch = rest.match(/\d+(?:[.-]\d+)*/)
-  if (!versionMatch) return { family: rest, version: null, effort }
+  if (!versionMatch) return { family: rest, version: null, effort, ...snapshot }
 
   const versionStr = versionMatch[0]
   const version = versionStr.split(/[.-]/).map(Number)
   const family = rest.slice(0, versionMatch.index) + '*' + rest.slice(versionMatch.index + versionStr.length)
-  return { family, version, effort }
+  return { family, version, effort, ...snapshot }
 }
 
 /** True when `a` is a strictly higher version than `b` (component-wise, missing components treated as 0). */

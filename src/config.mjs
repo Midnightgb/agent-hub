@@ -228,6 +228,16 @@ export const SANDBOX = {
   },
 }
 
+/**
+ * Provider tie-break for model auto-substitution (src/model-successors.mjs)
+ * when a pinned id vanished and several providers list its successor at the
+ * same version: earlier wins. opencode-go is the capped subscription plan
+ * ($12/5h), preferred over pay-per-token opencode Zen / direct providers.
+ */
+export const SUCCESSOR_PROVIDER_PREFERENCE = Object.freeze({
+  opencode: Object.freeze(['opencode-go', 'opencode']),
+})
+
 export function resolveVariant(agent, model, override) {
   if (override) return override
   return MODEL_REGISTRY[agent]?.[model]?.variant ?? null

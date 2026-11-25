@@ -223,6 +223,30 @@ accepted `add_candidate` pair as reachable, the same as a static chain step.
 `unmapped` list (`[{agent, model}]`) of catalog models with no safe taskType,
 rendered in the dashboard's Proposals panel alongside the proposal list.
 
+A trailing `-YYYYMMDD` run is a snapshot date, not a version: it is returned
+as `snapshot` and dropped from `version`, so `claude-sonnet-4-20250514` is
+version `[4]` and never counts as newer than `claude-sonnet-4-6`.
+
+### Vanished-pin substitution
+
+A pinned id (a concrete, non-pool chain step of agy, opencode or
+gentle-shell, including an accepted `add_candidate` step) that its CLI's live
+catalog no longer lists is swapped at `route()` time for its **successor**: the newest catalog
+model of the same family and effort suffix (provider prefix ignored), never a
+lower version, never a dated snapshot over a non-dated release, and never a
+paid model for a free pin (`src/model-successors.mjs`). Absence of evidence
+never substitutes: an errored or empty catalog keeps the pin. The substitute
+takes the vanished candidate's exact slot (after accepted reorders) and
+carries `substitutedFrom: <pinned id>`; `route()` returns every swap in
+`substitutions` and logs one `preflight`/`substitution` event per swap.
+A hold on the pinned id is honored: that candidate is not substituted and is
+skipped as `held`. Pool steps (`@free`, `@go`) are left untouched; they are
+expanded afterwards by the opencode model policy, which also gates any
+substituted opencode id. `agents_status` shows the successor of a stale pin as
+`successor`, and lists other discovered catalog models as
+`source: 'discovery'` rows, except opencode models the model policy blocks. This is the only automatic model change: any other new model
+still enters a chain only through an accepted `add_candidate` proposal.
+
 ## Learnings
 
 `learning_propose` records a short gotcha about an agent, model or task type as
