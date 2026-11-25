@@ -5,10 +5,10 @@ import { writeJsonAtomic, updateJsonLocked } from './fsutil.mjs'
 import { adapterFor, modelsArgv } from './adapters/index.mjs'
 import { runCommand } from './process.mjs'
 import { appendEvent } from './eventlog.mjs'
-import { DELEGATION_MAP } from './router.mjs'
+import { DELEGATION_MAP, EXPLICIT_ONLY_PAIRS } from './router.mjs'
 import { listProposals } from './proposals.mjs'
 
-export const KNOWN_AGENTS = ['agy', 'opencode', 'copilot', 'codex']
+export const KNOWN_AGENTS = ['agy', 'opencode', 'copilot', 'codex', 'gentle-shell']
 
 /**
  * Resolve a CLI's absolute path by scanning env.PATH ourselves (no shelling
@@ -186,6 +186,7 @@ function validPairKeys(env = process.env) {
       }
     }
   }
+  for (const pair of EXPLICIT_ONLY_PAIRS) keys.add(`${pair.agent}:${pair.model}`)
   for (const proposal of listProposals({ status: 'accepted' }, env)) {
     if (proposal.kind === 'add_candidate' && proposal.addCandidate) {
       keys.add(`${proposal.addCandidate.agent}:${proposal.addCandidate.model}`)

@@ -136,6 +136,8 @@ function renderHistoryView(
   if (initialSearch.status) searchParams.set("status", initialSearch.status)
   if (initialSearch.agent) searchParams.set("agent", initialSearch.agent)
   if (initialSearch.q) searchParams.set("q", initialSearch.q)
+  if (initialSearch.page) searchParams.set("page", String(initialSearch.page))
+  if (initialSearch.pageSize) searchParams.set("pageSize", String(initialSearch.pageSize))
   const qs = searchParams.toString()
   const initialEntry = `/history${qs ? `?${qs}` : ""}`
 
@@ -369,6 +371,99 @@ describe("HistoryView", () => {
         expect(screen.getByText("src/a.ts")).toBeTruthy()
         expect(screen.getByText("src/b.ts")).toBeTruthy()
       })
+    })
+  })
+
+  describe("pagination", () => {
+    // 25 succeeded jobs; job-25 finished last, so it is the most recent.
+    const MANY_JOBS: Job[] = Array.from({ length: 25 }, (_, index) => {
+      const n = index + 1
+      const minute = String(n).padStart(2, "0")
+      return {
+        ...MOCK_JOBS[1],
+        jobId: `job-${n}`,
+        title: `paged-task-${n}`,
+        status: n === 25 ? "failed" : "succeeded",
+        createdAt: `2026-09-16T10:${minute}:00.000Z`,
+        updatedAt: `2026-09-16T10:${minute}:30.000Z`,
+      }
+    })
+
+    const visibleTitles = () =>
+      screen.queryAllByText(/^paged-task-\d+$/).map((el) => el.textContent)
+
+    // A navigation can refetch /api/state; serve the same 25 jobs so the
+    // seeded query data is not replaced by MOCK_JOBS mid-test.
+    beforeEach(() => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => jsonResponse({ agents: [], jobs: MANY_JOBS, subagents: [], events: [] }))
+      )
+    })
+
+    it("shows only the 10 most recent jobs by default", async () => {
+      renderHistoryView({}, MANY_JOBS)
+      await waitFor(() => expect(screen.getByText("paged-task-25")).toBeTruthy())
+      const titles = visibleTitles()
+      expect(titles).toHaveLength(10)
+      expect(titles[0]).toBe("paged-task-25")
+      expect(titles[9]).toBe("paged-task-16")
+      expect(screen.queryByText("paged-task-15")).toBeNull()
+      expect(screen.getByText("Showing 1–10 of 25")).toBeTruthy()
+      expect(screen.getByText("Page 1 of 3")).toBeTruthy()
+    })
+
+    it("moves to the next and previous page and keeps the page in the URL", async () => {
+      const { router } = renderHistoryView({}, MANY_JOBS)
+      await waitFor(() => expect(screen.getByText("paged-task-25")).toBeTruthy())
+
+      fireEvent.click(screen.getByRole("button", { name: "Next page" }))
+      await waitFor(() => expect(screen.getByText("paged-task-15")).toBeTruthy())
+      expect(visibleTitles()).toHaveLength(10)
+      expect(screen.queryByText("paged-task-25")).toBeNull()
+      expect(router.state.location.search.page).toBe(2)
+      expect(screen.getByText("Showing 11–20 of 25")).toBeTruthy()
+
+      fireEvent.click(screen.getByRole("button", { name: "Previous page" }))
+      await waitFor(() => expect(screen.getByText("paged-task-25")).toBeTruthy())
+      expect(router.state.location.search.page).toBe(1)
+    })
+
+    it("opens a deep-linked last page with the remaining jobs and disables Next", async () => {
+      renderHistoryView({ page: 3 }, MANY_JOBS)
+      await waitFor(() => expect(screen.getByText("paged-task-5")).toBeTruthy())
+      expect(visibleTitles()).toEqual(["paged-task-5", "paged-task-4", "paged-task-3", "paged-task-2", "paged-task-1"])
+      expect(screen.getByText("Showing 21–25 of 25")).toBeTruthy()
+      expect((screen.getByRole("button", { name: "Next page" }) as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it("clamps a page past the end to the last page", async () => {
+      renderHistoryView({ page: 99 }, MANY_JOBS)
+      await waitFor(() => expect(screen.getByText("paged-task-1")).toBeTruthy())
+      expect(screen.getByText("Page 3 of 3")).toBeTruthy()
+    })
+
+    it("honors a larger page size from the URL", async () => {
+      renderHistoryView({ pageSize: 25 }, MANY_JOBS)
+      await waitFor(() => expect(screen.getByText("paged-task-25")).toBeTruthy())
+      expect(visibleTitles()).toHaveLength(25)
+      expect(screen.queryByRole("button", { name: "Next page" })).toBeNull()
+    })
+
+    it("goes back to the first page when a filter changes", async () => {
+      const { router } = renderHistoryView({ page: 2 }, MANY_JOBS)
+      await waitFor(() => expect(screen.getByText("paged-task-15")).toBeTruthy())
+
+      fireEvent.change(screen.getByLabelText("Search history"), { target: { value: "paged-task-2" } })
+      await waitFor(() => expect(router.state.location.search.page).toBe(1))
+      expect(router.state.location.search.q).toBe("paged-task-2")
+    })
+
+    it("hides the page controls when every job fits on one page", async () => {
+      renderHistoryView({}, MOCK_JOBS)
+      await waitFor(() => expect(screen.getByText("succeeded-task")).toBeTruthy())
+      expect(screen.queryByRole("button", { name: "Next page" })).toBeNull()
+      expect(screen.queryByText(/^Page \d+ of \d+$/)).toBeNull()
     })
   })
 })

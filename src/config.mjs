@@ -181,6 +181,7 @@ export const DEFAULT_TIMEOUTS_S = {
   // Codex is a fallback for SMALL bounded tasks with a limited plan quota;
   // 600s mirrors opencode's local-CLI default.
   codex: { default: 600 },
+  'gentle-shell': { default: 600 },
   // A Jules session runs asynchronously on Google's own infrastructure through
   // a full plan -> code -> test -> PR cycle, not a single local CLI turn, so
   // it routinely takes far longer than any local agent. Without this entry
@@ -294,5 +295,15 @@ export const MODEL_REGISTRY = {
     // appends it as the LAST fallback of a chain (see router.mjs) — never a
     // primary. 'default' means the CLI's own configured model.
     default: { tier: 'limited', dataPolicy: 'unknown', strengths: 'small bounded tasks; limited plan quota — fallback only' },
+  },
+  // gentle-shell (pi + the Gentle Shell package) bills per token on its
+  // signed-in Anthropic API key, so it is explicit-only: no DELEGATION_MAP
+  // chain names it (see EXPLICIT_ONLY_PAIRS in router.mjs). Every run also
+  // carries a ~19k-token system prompt (measured: ~$0.027 for a one-file read
+  // on claude-haiku-4-5).
+  'gentle-shell': {
+    'anthropic/claude-haiku-4-5': { tier: 'paid', dataPolicy: 'unknown', strengths: 'cheap Anthropic API model; bounded reads and summaries' },
+    'anthropic/claude-sonnet-5-5': { tier: 'paid', dataPolicy: 'unknown', strengths: 'Anthropic API; general coding and review, 1M ctx' },
+    'anthropic/claude-opus-5-5': { tier: 'expensive', dataPolicy: 'unknown', strengths: 'Anthropic API; architecture, hard judgment, 1M ctx' },
   },
 }

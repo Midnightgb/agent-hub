@@ -1,0 +1,6 @@
+provider       model                                                         context  max-out  thinking  images
+compat-custom  aihorde/526Mix-Animated                                       128K     4.1K     no        no    
+compat-custom  aihorde/A-Zovya RPG Inpainting                                128K     4.1K     no        no    
+opencode-go    beam-free                                                     1.0M     131.1K   yes       no    
+opencode-go    claude-haiku-5-5                                              1M       128K     yes       yes   
+opencode-go    deepseek-v4-pro                                               1M       384K     yes       no    

@@ -26,6 +26,11 @@ test('modelsArgv still works for the existing local agents', () => {
   assert.deepEqual(modelsArgv('copilot'), ['help', 'config'])
 })
 
+test('modelsArgv("gentle-shell") forwards --list-models to pi after the launcher separator', () => {
+  assert.deepEqual(modelsArgv('gentle-shell'), ['--', '--list-models'])
+  assert.equal(adapterFor('gentle-shell').cmd, 'gentle-shell')
+})
+
 test('modelsArgv("opencode") always calls the v2 JSON API, ignoring the model argument and never using --verbose or a provider positional', () => {
   assert.deepEqual(modelsArgv('opencode', 'deepseek/deepseek-v4-flash'), ['api', 'model.list'])
   assert.deepEqual(modelsArgv('opencode'), ['api', 'model.list'], 'the catalog call takes no model argument at all in v2 (one call covers every provider)')

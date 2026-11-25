@@ -329,11 +329,12 @@ Claude Code subagents:
 - **Isolation is automatic** (`isolation:'auto'`):
   - agy runs in a hub-managed scratch copy of your tree (uncommitted and untracked files
     included, removed after the job).
-  - copilot/codex/opencode run in place, because their CLIs enforce read-only.
+  - copilot/codex/opencode/gentle-shell run in place, because their CLIs enforce read-only.
   - Browser evidence survives the scratch copy: a `ui-test` job's screenshots and page
     snapshots (`.playwright-mcp/`) are saved to `runs/<jobId>/artifacts/` and listed in
-    `isolation.artifacts`. Read them from there; do not pass `isolation:'in-place'` just to
-    keep screenshots. A path the agent quotes inside the scratch dir is already gone.
+    `isolation.artifacts`, even when `.playwright-mcp/` is gitignored. Read them from there;
+    do not pass `isolation:'in-place'` just to keep screenshots. A path the agent quotes
+    inside the scratch dir is already gone.
   - If the tree changes during the run, the job still succeeds and reports
     `readGuard.level:'warn'` with the changed paths. Usually that is your own edit or a sibling
     job's, but the guard cannot tell who wrote it: check any path you did not touch.

@@ -1082,7 +1082,10 @@ export function createServer({ env = process.env, commandRunner = runCommand, di
 
   // Safety net: a synchronous throw inside a route must become a 500 for that
   // request, not an uncaught exception that exits the dashboard process.
-  const server = http.createServer((req, res) => {
+  // Browsers send every cookie set on `localhost` (cookies ignore the port) to
+  // this server too, so other dev apps can push headers past Node's 16 KiB
+  // default and the dashboard answered 431. 64 KiB covers that comfortably.
+  const server = http.createServer({ maxHeaderSize: 64 * 1024 }, (req, res) => {
     try {
       handleRequest(req, res)
     } catch (error) {

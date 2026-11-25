@@ -2,7 +2,7 @@
 
 ## Event watcher and notifications policy
 
-`bin/agent-hub watch [--once|--follow] [--sink console|file|webhook]`
+`bin/agent-hub watch [--once|--follow] [--sink console|file|webhook] [--job ID[,ID...]] [--root ID] [--until-terminal]`
 tails `events.jsonl` (`src/notify/watch.mjs`, offset-tracked) and routes events
 according to a declarative notification policy (`src/notify/policy.mjs`):
 
@@ -10,6 +10,7 @@ according to a declarative notification policy (`src/notify/policy.mjs`):
 |---|---|---|---|
 | `job.finished` | `console` | `info` | 0 ms (immediate) |
 | `job.failed` | `console`, `file` | `error` | 0 ms (immediate) |
+| `job.canceled` | `console` | `warn` | 0 ms (immediate) |
 | `jules.waiting` | `console`, `file` | `warn` | 60,000 ms (1 min) |
 | `jules.attention_required` | `console`, `file`, `webhook` | `error` | 300,000 ms (5 min) |
 | `workflow.completed` | `console`, `file` | `info` | 0 ms (immediate) |
@@ -19,6 +20,26 @@ Sinks (`src/notify/adapters.mjs`) dispatch to `console`, file
 (`AGENT_HUB_WEBHOOK_URL`). Adapters never throw, sanitize secrets before
 logging, and suppress duplicate notifications within the category's `dedupMs`
 window. The watcher runs as a standalone process outside the MCP stdio lifecycle.
+
+### Getting told when a delegated job ends
+
+Delegated agents finish silently; the hub, not the agent, is the source of the
+signal. Run the watcher in the background (for Claude Code, a background Bash
+command or a Monitor) and it exits when the work is done:
+
+```bash
+agent-hub watch --follow --job <jobId>[,<jobId>...] --until-terminal
+agent-hub watch --follow --root <rootExecutionId> --until-terminal
+```
+
+- `--job` (repeatable, comma-separated) and `--root` filter routed events to
+  those jobs; `--root` matches every job of that root execution.
+- `--until-terminal` (requires `--job` or `--root`, `--follow` only) exits 0
+  once every targeted job is `succeeded`, `failed` or `canceled`. Terminal state
+  is read from the job store, so a job that already finished before the watcher
+  started is counted and nothing is missed.
+- A job marked `failed` with `errorKind: 'orphaned'` on startup reconcile now
+  emits a `job.failed` event, so a watcher no longer waits on it forever.
 
 ## Dashboard
 

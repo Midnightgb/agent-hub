@@ -1,11 +1,11 @@
 import * as React from "react"
 import { useNavigate, useSearch } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { AlertTriangle, History } from "lucide-react"
+import { AlertTriangle, ChevronLeft, ChevronRight, History } from "lucide-react"
 import { JobResultResponse } from "@shared"
 import { fetchJson } from "@/lib/api"
 import { useStateQuery } from "@/lib/queries"
-import { HistorySearch, type HistorySearchT } from "@/routes/search"
+import { HISTORY_PAGE_SIZES, HistorySearch, type HistorySearchT } from "@/routes/search"
 import type { Job } from "@/lib/types"
 import { JobProfileBadge } from "@/views/providers"
 import { formatModel, formatNumber, formatDuration } from "@/lib/format"
@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import {
@@ -163,6 +164,16 @@ export function HistoryView() {
       return true
     })
   }, [terminalJobs, search.status, search.agent, search.q])
+
+  // Jobs are sorted newest first, so page 1 holds the most recent ones. A page
+  // past the end (e.g. after a filter shrinks the list) shows the last page.
+  const pageCount = Math.max(1, Math.ceil(filteredJobs.length / search.pageSize))
+  const page = Math.min(search.page, pageCount)
+  const pageStart = (page - 1) * search.pageSize
+  const pageJobs = React.useMemo(
+    () => filteredJobs.slice(pageStart, pageStart + search.pageSize),
+    [filteredJobs, pageStart, search.pageSize]
+  )
 
   const selectedJob = React.useMemo(() => {
     if (!selectedJobId) return null
@@ -339,7 +350,7 @@ export function HistoryView() {
           value={[search.status]}
           onValueChange={(val) => {
             const next = (val[val.length - 1] ?? "all") as HistorySearchT["status"]
-            updateSearch(() => ({ status: next }))
+            updateSearch(() => ({ status: next, page: 1 }))
           }}
           variant="outline"
           size="sm"
@@ -361,7 +372,7 @@ export function HistoryView() {
         <Select
           value={search.agent || "all"}
           onValueChange={(val) => {
-            updateSearch(() => ({ agent: val === "all" ? "" : (val as string) }))
+            updateSearch(() => ({ agent: val === "all" ? "" : (val as string), page: 1 }))
           }}
         >
           <SelectTrigger aria-label="Filter by agent" className="w-[180px]">
@@ -382,7 +393,7 @@ export function HistoryView() {
         <Input
           type="search"
           value={search.q}
-          onChange={(e) => updateSearch(() => ({ q: e.target.value }))}
+          onChange={(e) => updateSearch(() => ({ q: e.target.value, page: 1 }))}
           placeholder="Search title, jobId, model, error…"
           aria-label="Search history"
           className="w-64"
@@ -391,13 +402,67 @@ export function HistoryView() {
 
       <DataTable
         columns={columns}
-        rows={filteredJobs}
+        rows={pageJobs}
         getRowId={(job) => job.jobId}
         onRowClick={(job) => setSelectedJobId(job.jobId)}
         emptyMessage={
           <EmptyState icon={History} title={emptyTitle} description={emptyDescription} />
         }
       />
+
+      {filteredJobs.length > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="text-xs text-muted-foreground">
+            {`Showing ${pageStart + 1}–${pageStart + pageJobs.length} of ${filteredJobs.length}`}
+          </span>
+          <div className="flex items-center gap-2">
+            <Select
+              value={String(search.pageSize)}
+              onValueChange={(val) => {
+                updateSearch(() => ({ pageSize: Number(val), page: 1 }))
+              }}
+            >
+              <SelectTrigger aria-label="Jobs per page" size="sm" className="w-[110px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {HISTORY_PAGE_SIZES.map((size) => (
+                    <SelectItem key={size} value={String(size)}>
+                      {size} / page
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            {pageCount > 1 ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Previous page"
+                  disabled={page <= 1}
+                  onClick={() => updateSearch(() => ({ page: page - 1 }))}
+                >
+                  <ChevronLeft />
+                </Button>
+                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                  {`Page ${page} of ${pageCount}`}
+                </span>
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Next page"
+                  disabled={page >= pageCount}
+                  onClick={() => updateSearch(() => ({ page: page + 1 }))}
+                >
+                  <ChevronRight />
+                </Button>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <Sheet open={Boolean(selectedJob)} onOpenChange={(open) => { if (!open) setSelectedJobId(null) }}>
         <SheetContent className="overflow-y-auto sm:max-w-xl">
@@ -477,7 +542,7 @@ export function HistoryView() {
                         type="button"
                         className="cursor-pointer font-mono text-xs text-primary underline underline-offset-2 hover:text-primary/80"
                         onClick={() => {
-                          updateSearch(() => ({ q: selectedJob.parentJobId! }))
+                          updateSearch(() => ({ q: selectedJob.parentJobId!, page: 1 }))
                         }}
                       >
                         {selectedJob.parentJobId}

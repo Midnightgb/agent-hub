@@ -12,6 +12,11 @@ export const DEFAULT_POLICY = Object.freeze({
     severity: 'error',
     dedupMs: 0,
   }),
+  'job.canceled': Object.freeze({
+    channels: Object.freeze(['console']),
+    severity: 'warn',
+    dedupMs: 0,
+  }),
   'jules.waiting': Object.freeze({
     channels: Object.freeze(['console', 'file']),
     severity: 'warn',

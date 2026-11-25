@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `gentle-shell` agent (pi with the Gentle Shell package): a CLI adapter whose
+  models come from `pi --list-models` (`provider/id`, e.g.
+  `anthropic/claude-sonnet-5-5`). It is **explicit-only**: no routing chain
+  names it, so only `delegate`/`task_assign` reach it, because it bills per
+  token on an Anthropic API key. `agents_status`/`agents_quota` still list
+  its pairs. Read jobs pass pi a read-only tool allowlist with MCP disabled;
+  `job_reply` resumes through `--fork`. Quota errors (429, usage limit,
+  credit balance) classify as `quota`; `opencode-go/*` models on it share
+  the opencode go CodexBar quota. See [docs/providers/gentle-shell.md](docs/providers/gentle-shell.md).
+- Dashboard background is now a subtle interactive dot grid (React Bits
+  `DotGrid`, WebGL) instead of the letter-glitch matrix; it follows the theme
+  and respects `prefers-reduced-motion`.
+- `agent-hub watch --job/--root/--until-terminal`: filter events to specific
+  jobs or a root execution and exit 0 once all of them are terminal, so a
+  background watcher tells the orchestrator when delegated work ends. `job.canceled`
+  is now routed, and startup reconcile emits `job.failed` (`errorKind: orphaned`)
+  for orphaned jobs.
 - Opt-in quota-aware routing (`AGENT_HUB_QUOTA_ROUTING=skip`, default `off`):
   `route`/`dispatch` skip a pair whose quota is used up (every eligible agys
   account for agy, the CodexBar windows otherwise; threshold
@@ -97,6 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Dashboard no longer answers 431 when the browser sends large `localhost` cookies
+  from other dev apps (`maxHeaderSize` raised to 64 KiB).
 - The `claude` capability row no longer claims `sessionResume`: the hub has no
   claude CLI adapter (claude tiers are host-only routing hints), so it cannot
   resume a host-run Claude subagent session. Routing with

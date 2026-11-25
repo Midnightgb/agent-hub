@@ -36,6 +36,24 @@ test('defaultPairs lists every distinct agent:model pair from DELEGATION_MAP, ex
   assert.equal(new Set(keys).size, keys.length, 'no duplicate pairs')
 })
 
+test('explicit-only pairs are checked by agents_status but never named by a routing chain', async () => {
+  const { defaultPairs } = await fresh(tmpHome())
+  const { DELEGATION_MAP, EXPLICIT_ONLY_PAIRS } = await import('../src/router.mjs')
+  const keys = new Set(defaultPairs().map((p) => `${p.agent}:${p.model}`))
+  assert.ok(EXPLICIT_ONLY_PAIRS.length > 0)
+  for (const pair of EXPLICIT_ONLY_PAIRS) {
+    assert.ok(keys.has(`${pair.agent}:${pair.model}`), `${pair.agent}:${pair.model} is a default pair`)
+  }
+  const explicitAgents = new Set(EXPLICIT_ONLY_PAIRS.map((p) => p.agent))
+  for (const [taskType, entry] of Object.entries(DELEGATION_MAP)) {
+    for (const candidate of entry.chain) {
+      for (const c of [candidate, candidate.parallelWith].filter(Boolean)) {
+        assert.ok(!explicitAgents.has(c.agent), `${taskType} must not route to explicit-only agent ${c.agent}`)
+      }
+    }
+  }
+})
+
 test('agentsStatusTool rows include binPath/cliVersion resolved from discovery.json (null when discovery has no row)', async () => {
   const home = tmpHome()
   const { agentsStatusTool } = await fresh(home)

@@ -1,6 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { quotaFor } from '../src/quota/mapping.mjs'
+import { quotaFor, getProvider } from '../src/quota/mapping.mjs'
+
+test('gentle-shell shares the opencode go quota and leaves Anthropic API models unmetered', () => {
+  assert.equal(getProvider('gentle-shell', 'opencode-go/qwen3.8-flash'), 'opencodego')
+  assert.equal(getProvider('gentle-shell', 'anthropic/claude-sonnet-5-5'), null)
+  assert.equal(getProvider('opencode', 'opencode-go/default'), 'opencodego')
+})
 
 test('opencode free models are not metered', () => {
   const result = quotaFor({ agent: 'opencode', model: 'opencode/muse-spark-1.3-contributor-free' }, {})

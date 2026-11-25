@@ -124,6 +124,20 @@ export const DELEGATION_MAP = {
   },
 }
 
+/**
+ * Agent+model pairs reachable ONLY through an explicit delegate/task_assign
+ * call. No DELEGATION_MAP chain names them, so route() and dispatch never pick
+ * them; they are listed here so agents_status, agents_quota, the boot
+ * preflight and the dashboard still check and show them. gentle-shell bills
+ * per token on its signed-in Anthropic API key, which is why it is never
+ * chosen automatically.
+ */
+export const EXPLICIT_ONLY_PAIRS = Object.freeze([
+  Object.freeze({ agent: 'gentle-shell', model: 'anthropic/claude-haiku-4-5' }),
+  Object.freeze({ agent: 'gentle-shell', model: 'anthropic/claude-sonnet-5-5' }),
+  Object.freeze({ agent: 'gentle-shell', model: 'anthropic/claude-opus-5-5' }),
+])
+
 function isDiscoveryFresh(entry, ttlMs) {
   if (!entry?.checkedAt) return false
   return Date.now() - new Date(entry.checkedAt).getTime() < ttlMs

@@ -1,5 +1,5 @@
 import { agentsStatus as runAgentsStatus } from '../preflight.mjs'
-import { route as defaultRoute, DELEGATION_MAP, knownTaskTypes } from '../router.mjs'
+import { route as defaultRoute, DELEGATION_MAP, EXPLICIT_ONLY_PAIRS, knownTaskTypes } from '../router.mjs'
 import { MODEL_REGISTRY } from '../config.mjs'
 import { readDiscovery } from '../discovery.mjs'
 import { effectiveTier } from '../catalog.mjs'
@@ -13,7 +13,7 @@ import { activeQuotaMark } from '../routing/quota-gate.mjs'
 /**
  * The default set of agent+model pairs agents_status checks: every distinct
  * CLI pair (not Claude subagent tiers, which are not CLI-preflighted) named
- * anywhere in the delegation map.
+ * anywhere in the delegation map, plus the explicit-only pairs.
  */
 export function defaultPairs() {
   const seen = new Set()
@@ -31,6 +31,7 @@ export function defaultPairs() {
       add(candidate.parallelWith)
     }
   }
+  for (const pair of EXPLICIT_ONLY_PAIRS) add(pair)
   return pairs
 }
 

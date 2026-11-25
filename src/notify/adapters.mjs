@@ -15,6 +15,7 @@ import { paths } from '../config.mjs'
  *
  * - job.finished            — event.kind === 'job.finished'
  * - job.failed              — event.kind === 'job.failed'
+ * - job.canceled            — event.kind === 'job.canceled'
  * - workflow.completed      — event.kind === 'workflow.completed' (hook only;
  *                             workflows don't exist yet, no emitter writes it)
  * - jules.waiting           — the poller stopped for interaction: derived from
@@ -30,12 +31,12 @@ import { paths } from '../config.mjs'
  *                             fields. Checked FIRST: attention implies waiting
  *                             but is the more specific, actionable signal.
  *
- * Everything else (job.queued/started/canceled, preflight, subagent.*,
+ * Everything else (job.queued/started, preflight, subagent.*,
  * proposal.*, learning.*) routes to null and is ignored by every adapter.
  */
 
 /** Kinds that route by kind alone (no attention/waiting fields needed). */
-export const INTERESTING_KINDS = new Set(['job.finished', 'job.failed', 'workflow.completed'])
+export const INTERESTING_KINDS = new Set(['job.finished', 'job.failed', 'job.canceled', 'workflow.completed'])
 
 function field(event, name) {
   if (event?.[name] !== undefined) return event[name]

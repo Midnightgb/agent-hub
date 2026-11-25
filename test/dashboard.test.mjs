@@ -532,6 +532,7 @@ test('POST /api/agents/refresh with an empty body refreshes every default pair u
   fakeExecutable(binDir, 'opencode')
   fakeExecutable(binDir, 'copilot')
   fakeExecutable(binDir, 'codex')
+  fakeExecutable(binDir, 'gentle-shell')
   const env = { AGENT_HUB_HOME: home, PATH: binDir }
   const runner = fakeRunner([
     ['--version', { stdout: 'v', stderr: '', code: 0 }],
