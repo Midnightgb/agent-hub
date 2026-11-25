@@ -5,12 +5,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { seedOpencodeCatalog } from './helpers/opencode-catalog.mjs'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const readJson = (file) => JSON.parse(fs.readFileSync(path.join(dirname, 'fixtures', 'codexbar', file), 'utf8'))
 
 function isolated(overrides = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-'))
+  seedOpencodeCatalog(tempDir)
   return {
     ...process.env,
     AGENT_HUB_HOME: tempDir,

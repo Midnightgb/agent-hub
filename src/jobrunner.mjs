@@ -19,6 +19,7 @@ import { modelGroupFor } from './providers/profiles.mjs'
 import { quotaRoutingMode, recordQuotaMark as defaultRecordQuotaMark } from './routing/quota-gate.mjs'
 import { hasBrowserServer, mcpConfigPath, homeDirOf, profileHasBrowser } from './providers/agy-mcp.mjs'
 import { requirementsFor } from './capabilities.mjs'
+import { assertModelAllowed } from './model-policy.mjs'
 import {
   captureDiffBase as defaultCaptureDiffBase,
   captureRepoInfo as defaultCaptureRepoInfo,
@@ -294,6 +295,8 @@ export function startJob({
   assertIsolation(isolation)
   assertOutput(output)
   assertWriteScope(writeScope, mode)
+  // opencode-model-policy (S3): a model the user has not allowed never runs.
+  assertModelAllowed({ agent, model, env, discovery: readDiscoveryFn(env) })
   const scratchWriter = mode === 'write' && writeScope != null
   // D2: one bad check must reject the whole call before any side effect
   // (job record, write lock, spawn) — mirrors the adapterFor(agent) throw

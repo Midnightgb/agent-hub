@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { seedOpencodeCatalog } from './helpers/opencode-catalog.mjs'
 
 function tmpHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-tools-agents-'))
+  return seedOpencodeCatalog(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-tools-agents-')))
 }
 
 async function fresh(home) {
@@ -113,7 +114,7 @@ test('agentsStatusTool with refresh:true does not await the network — quota re
   }
 })
 
-test('agentsStatusTool: tier/tierSource come from the live catalog when a fresh, error-free opencode discovery row lists the model', async () => {
+test('agentsStatusTool: tier/tierSource come from the live catalog, and a model the catalog prices is blocked by default', async () => {
   const home = tmpHome()
   const { writeJsonAtomic } = await import('../src/fsutil.mjs?t=' + Date.now())
   const { paths } = await import('../src/config.mjs?t=' + Date.now())
@@ -123,10 +124,12 @@ test('agentsStatusTool: tier/tierSource come from the live catalog when a fresh,
       cmd: 'opencode',
       binPath: '/bin/opencode',
       version: 'opencode v2.0.18',
-      // opencode/mimo-v2.5-free is still pinned as tier:'free' in MODEL_REGISTRY
-      // (src/config.mjs) -- this proves the LIVE catalog cost wins, not the
-      // stale registry value.
-      models: [{ id: 'opencode/mimo-v2.5-free', cost: [{ input: 0.2, output: 0.2 }] }],
+      models: [
+        // Pinned as tier:'free' in MODEL_REGISTRY, but the live catalog prices
+        // it: the model policy blocks it by default, so it is never checked.
+        { id: 'opencode/mimo-v2.5-free', cost: [{ input: 0.2, output: 0.2 }] },
+        { id: 'opencode/glm-5.3-flash-free', cost: [{ input: 0, output: 0 }] },
+      ],
       checkedAt: new Date().toISOString(),
       error: null,
     },
@@ -139,23 +142,26 @@ test('agentsStatusTool: tier/tierSource come from the live catalog when a fresh,
   ])
 
   const rows = await agentsStatusTool({ cwd: '/tmp', env: { AGENT_HUB_HOME: home }, commandRunner: runner })
-  const row = rows.find((r) => r.agent === 'opencode' && r.model === 'opencode/mimo-v2.5-free')
-  assert.equal(row.tier, 'paid')
+  assert.equal(rows.some((r) => r.model === 'opencode/mimo-v2.5-free'), false)
+  const row = rows.find((r) => r.agent === 'opencode' && r.model === 'opencode/glm-5.3-flash-free')
+  assert.equal(row.tier, 'free')
   assert.equal(row.tierSource, 'catalog')
 })
 
 test('agentsStatusTool: tier/tierSource fall back to the MODEL_REGISTRY tier when there is no fresh discovery row', async () => {
-  const home = tmpHome()
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-tools-agents-'))
   const { agentsStatusTool } = await fresh(home)
   const runner = fakeRunner([
     ['--version', { stdout: 'v', stderr: '', code: 0 }],
-    [/models|help config/, { stdout: 'opencode/mimo-v2.5-free\tlabel\n', stderr: '', code: 0 }],
+    [/models|help config/, { stdout: 'gemini-3.8-flash-low\tlabel\n', stderr: '', code: 0 }],
   ])
 
   const rows = await agentsStatusTool({ cwd: '/tmp', env: { AGENT_HUB_HOME: home }, commandRunner: runner })
-  const row = rows.find((r) => r.agent === 'opencode' && r.model === 'opencode/mimo-v2.5-free')
-  assert.equal(row.tier, 'free')
+  const row = rows.find((r) => r.agent === 'agy' && r.model === 'gemini-3.8-flash-low')
+  assert.equal(row.tier, 'cheap')
   assert.equal(row.tierSource, 'registry')
+  // Without an opencode catalog no pool resolves, so no opencode model is checked.
+  assert.equal(rows.some((r) => r.agent === 'opencode'), false)
 })
 
 test('routeTool forwards default requirements, preferences and adaptive when omitted', async () => {

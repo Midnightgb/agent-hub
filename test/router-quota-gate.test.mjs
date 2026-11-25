@@ -5,12 +5,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { route } from '../src/router.mjs'
+import { seedOpencodeCatalog } from './helpers/opencode-catalog.mjs'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const copilotFixture = () => JSON.parse(fs.readFileSync(path.join(dirname, 'fixtures', 'codexbar', 'copilot.json'), 'utf8'))
 
 function isolated(overrides = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-quota-gate-test-'))
+  seedOpencodeCatalog(home)
   return { AGENT_HUB_HOME: home, AGENT_HUB_CODEXBAR_URL: 'http://127.0.0.1:8787', ...overrides }
 }
 

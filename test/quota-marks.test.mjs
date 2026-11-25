@@ -6,12 +6,14 @@ import path from 'node:path'
 import { route } from '../src/router.mjs'
 import { parseQuotaResetAt, recordQuotaMark, activeQuotaMark } from '../src/routing/quota-gate.mjs'
 import { agentsQuotaTool } from '../src/tools/agents.mjs'
+import { seedOpencodeCatalog } from './helpers/opencode-catalog.mjs'
 
 const NOW = Date.parse('2026-10-22T12:00:00Z')
 const HOUR = 3_600_000
 
 function isolated(overrides = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-quota-marks-test-'))
+  seedOpencodeCatalog(home)
   return { AGENT_HUB_HOME: home, AGENT_HUB_CODEXBAR_URL: 'http://127.0.0.1:8787', ...overrides }
 }
 

@@ -42,6 +42,7 @@ import { breakerFor, overrideFor } from "@/lib/badges"
 import { formatAge, formatLatency, formatModel } from "@/lib/format"
 import { TONE_BADGE_CLASS } from "@/lib/tone"
 import { cn } from "@/lib/utils"
+import { ModelPolicyPanel } from "./model-policy-panel"
 import type { AgentRow, DerivedState } from "@/lib/types"
 import { AgentDetailSheet } from "./agent-detail-sheet"
 import {
@@ -454,6 +455,10 @@ export function AgentsView() {
           })}
         </div>
       )}
+
+      <div className="pt-6">
+        <ModelPolicyPanel agent="opencode" />
+      </div>
 
       <AgentDetailSheet row={selected} state={state} onOpenChange={(open) => !open && setSelected(null)} />
 

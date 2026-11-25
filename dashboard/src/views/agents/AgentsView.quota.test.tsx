@@ -24,6 +24,9 @@ vi.mock("@/lib/api", () => ({
   decideLearning: vi.fn(),
   deleteLearning: vi.fn(),
   createLearning: vi.fn(),
+  getModelPolicy: vi.fn(() => Promise.resolve({ agent: "opencode", catalogAvailable: false, catalogCheckedAt: null, models: [] })),
+  setModelDecision: vi.fn(),
+  setModelOrder: vi.fn(),
   ApiError: class ApiError extends Error {},
 }))
 

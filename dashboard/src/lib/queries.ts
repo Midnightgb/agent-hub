@@ -77,6 +77,26 @@ export function useClearOverrideMutation() {
   })
 }
 
+export function useModelPolicyQuery(agent = "opencode") {
+  return useQuery({ queryKey: qk.modelPolicy(agent), queryFn: () => api.getModelPolicy(agent) })
+}
+
+export function useSetModelDecisionMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.setModelDecision,
+    onSuccess: (_data, vars) => queryClient.invalidateQueries({ queryKey: qk.modelPolicy(vars.agent) }),
+  })
+}
+
+export function useSetModelOrderMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.setModelOrder,
+    onSuccess: (_data, vars) => queryClient.invalidateQueries({ queryKey: qk.modelPolicy(vars.agent) }),
+  })
+}
+
 export function useCancelJobMutation() {
   const queryClient = useQueryClient()
   return useMutation({

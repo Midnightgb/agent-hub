@@ -88,6 +88,8 @@ export function computeModelGaps({ discovery = {}, map = {}, registry = {} } = {
   for (const [taskType, entry] of Object.entries(map)) {
     for (const step of entry?.chain ?? []) {
       if (!ELIGIBLE_AGENTS.includes(step.agent)) continue
+      // A pool step (`@free`) is not a model id: model-policy.mjs resolves it.
+      if (typeof step.model === 'string' && step.model.startsWith('@')) continue
       const mode = step.mode ?? 'read'
       const key = `${step.agent}:${step.model}:${mode}`
       if (!usageGroups.has(key)) usageGroups.set(key, { agent: step.agent, model: step.model, mode, taskTypes: [] })

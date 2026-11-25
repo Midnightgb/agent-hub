@@ -7,6 +7,7 @@ import { runCommand } from './process.mjs'
 import { appendEvent } from './eventlog.mjs'
 import { DELEGATION_MAP, EXPLICIT_ONLY_PAIRS } from './router.mjs'
 import { listProposals } from './proposals.mjs'
+import { expandChain } from './model-policy.mjs'
 
 export const KNOWN_AGENTS = ['agy', 'opencode', 'copilot', 'codex', 'gentle-shell']
 
@@ -179,7 +180,7 @@ export async function runDiscovery({ agents = KNOWN_AGENTS, env = process.env, c
 function validPairKeys(env = process.env) {
   const keys = new Set()
   for (const entry of Object.values(DELEGATION_MAP)) {
-    for (const candidate of entry.chain) {
+    for (const candidate of expandChain(entry.chain, { env }).chain) {
       if (candidate.agent !== 'claude') keys.add(`${candidate.agent}:${candidate.model}`)
       if (candidate.parallelWith && candidate.parallelWith.agent !== 'claude') {
         keys.add(`${candidate.parallelWith.agent}:${candidate.parallelWith.model}`)

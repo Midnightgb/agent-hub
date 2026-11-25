@@ -99,7 +99,8 @@ export function computeCatalogDrift({ discovery = {}, map = {}, registry = {}, a
   }
   for (const chainEntry of Object.values(map ?? {})) {
     for (const step of chainEntry?.chain ?? []) {
-      if (step?.agent !== agent || !step.model) continue
+      // A pool step (`@free`) is not a model id: model-policy.mjs resolves it.
+      if (step?.agent !== agent || !step.model || step.model.startsWith('@')) continue
       if (!pinnedVariant.has(step.model)) pinnedVariant.set(step.model, null)
     }
   }

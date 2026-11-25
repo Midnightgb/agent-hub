@@ -4,6 +4,7 @@ import { readJsonSafe, updateJsonLocked } from './fsutil.mjs'
 import { appendEvent } from './eventlog.mjs'
 import { computeMetrics } from './metrics.mjs'
 import { computeModelGaps } from './model-gaps.mjs'
+import { isPoolModel, poolOf, modelPool } from './model-policy.mjs'
 
 /**
  * Routing proposals: evidence-backed reorders of a DELEGATION_MAP chain,
@@ -70,11 +71,38 @@ export function wilson(successes, n, z = 1.96) {
   return { low: (center - margin) / denom, high: (center + margin) / denom }
 }
 
-function findRow(rows, candidate, taskType) {
+function findRow(rows, candidate, taskType, poolOfModel = null) {
   const mode = candidate.mode ?? 'read'
+  if (isPoolModel(candidate.model)) return poolRow(rows, candidate, taskType, mode, poolOfModel)
   return (
     rows.find((r) => r.agent === candidate.agent && r.model === candidate.model && r.mode === mode && r.taskType === taskType) ?? null
   )
+}
+
+/**
+ * Metrics rows store the concrete model that ran, never a pool placeholder,
+ * so a pool step (`@free`) is measured by summing the rows of the models
+ * `poolOfModel(agent, model)` assigns to that pool. null without a classifier
+ * or without matching rows.
+ */
+function poolRow(rows, candidate, taskType, mode, poolOfModel) {
+  if (typeof poolOfModel !== 'function') return null
+  const pool = poolOf(candidate.model)
+  const members = rows.filter(
+    (r) => r.agent === candidate.agent && r.mode === mode && r.taskType === taskType && poolOfModel(r.agent, r.model) === pool
+  )
+  if (members.length === 0) return null
+  const samples = members.reduce((n, r) => n + (r.samples ?? 0), 0)
+  const succeeded = members.reduce((n, r) => n + (r.succeeded ?? 0), 0)
+  return { agent: candidate.agent, model: candidate.model, mode, taskType, samples, succeeded, successRate: samples ? succeeded / samples : 0, p50Ms: null }
+}
+
+/** poolOfModel for computeProposals from a discovery.json catalog (model-policy.mjs pools). */
+export function poolClassifier(discovery = {}) {
+  return (agent, model) => {
+    const entry = discovery?.[agent]?.models?.find?.((m) => m?.id === model)
+    return entry ? modelPool(entry) : null
+  }
 }
 
 /**
@@ -84,7 +112,7 @@ function findRow(rows, candidate, taskType) {
  * candidates and proposes promoting whichever one has a strictly better,
  * non-overlapping Wilson lower bound once both have enough samples.
  */
-export function computeProposals({ metrics, map, minSamples = METRICS_MIN_SAMPLES, now = new Date() } = {}) {
+export function computeProposals({ metrics, map, minSamples = METRICS_MIN_SAMPLES, now = new Date(), poolOfModel = null } = {}) {
   void now
   const rows = metrics?.rows ?? []
   const proposals = []
@@ -97,12 +125,12 @@ export function computeProposals({ metrics, map, minSamples = METRICS_MIN_SAMPLE
     const primary = cliCandidates[0]
     const others = cliCandidates.slice(1)
 
-    const primaryRow = findRow(rows, primary, taskType)
+    const primaryRow = findRow(rows, primary, taskType, poolOfModel)
     if (!primaryRow || primaryRow.samples < minSamples) continue
 
     const eligible = []
     for (const candidate of others) {
-      const row = findRow(rows, candidate, taskType)
+      const row = findRow(rows, candidate, taskType, poolOfModel)
       if (row && row.samples >= minSamples) eligible.push({ candidate, row })
     }
     if (eligible.length === 0) continue
@@ -121,7 +149,7 @@ export function computeProposals({ metrics, map, minSamples = METRICS_MIN_SAMPLE
 
     const evidence = {}
     for (const candidate of cliCandidates) {
-      const row = findRow(rows, candidate, taskType)
+      const row = findRow(rows, candidate, taskType, poolOfModel)
       if (!row) continue
       evidence[pairKey(candidate)] = {
         samples: row.samples,
@@ -210,7 +238,7 @@ export function refreshProposals({ env = process.env, map = {}, discovery = {}, 
 
       // 3. Reorder proposals, computed over the effective chain so a newly
       // added candidate becomes eligible for promotion once it has metrics.
-      const computedReorders = computeProposals({ metrics, map: effectiveMap, now })
+      const computedReorders = computeProposals({ metrics, map: effectiveMap, now, poolOfModel: poolClassifier(discovery) })
       for (const candidate of computedReorders) {
         const hasPending = data.proposals.some(
           (p) => p.taskType === candidate.taskType && (p.kind ?? 'reorder') === 'reorder' && p.status === 'pending'
