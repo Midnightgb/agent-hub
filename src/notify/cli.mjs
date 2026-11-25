@@ -2,10 +2,29 @@ import { readTail } from '../eventlog.mjs'
 import { watchEvents } from './watch.mjs'
 import { routeEvent, consoleAdapter, createFileAdapter, createWebhookAdapter } from './adapters.mjs'
 import { deliverCompletion } from '../harness/lifecycle.mjs'
+import { listJobs, readResult } from '../jobstore.mjs'
+
+const USAGE =
+  'Usage: agent-hub watch [--once|--follow] [--sink console|file|webhook] [--file PATH] [--url URL] [--tail N] ' +
+  '[--job ID[,ID...]] [--root ID] [--until-terminal]'
+const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
+const TERMINAL_KINDS = new Set(['job.finished', 'job.failed', 'job.canceled'])
+
+function rootOf(record) {
+  return record?.root_execution_id ?? record?.rootExecutionId ?? null
+}
+
+function safeRead(jobId, env) {
+  try {
+    return readResult(jobId, env)
+  } catch {
+    return null
+  }
+}
 
 function usageError(message) {
   console.error(`agent-hub watch: ${message}`)
-  console.error('Usage: agent-hub watch [--once|--follow] [--sink console|file|webhook] [--file PATH] [--url URL] [--tail N]')
+  console.error(USAGE)
   process.exitCode = 2
   return false
 }
@@ -19,6 +38,11 @@ function usageError(message) {
  *   appends), then tail events.jsonl until SIGINT/SIGTERM.
  * - --sink: comma-separated/repeatable, subset of console|file|webhook
  *   (default console). --file sets the file sink path, --url the webhook URL.
+ * - --job ID[,ID...] / --root ID: only route events of those jobs (repeatable
+ *   --job; --root matches every job whose root execution id is ID).
+ * - --until-terminal: with --job/--root and --follow, exit 0 once every
+ *   targeted job is terminal (succeeded/failed/canceled). Jobs already terminal
+ *   when the watcher starts count, so a fast job cannot be missed.
  */
 export async function runWatchCli(args, { env = process.env } = {}) {
   let once = false
@@ -27,6 +51,9 @@ export async function runWatchCli(args, { env = process.env } = {}) {
   let file = null
   let url = null
   let tail = null
+  const jobIds = []
+  let root = null
+  let untilTerminal = false
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -52,8 +79,21 @@ export async function runWatchCli(args, { env = process.env } = {}) {
     } else if (a.startsWith('--tail=')) {
       tail = Number(a.slice('--tail='.length))
       if (!Number.isInteger(tail) || tail < 0) return usageError('--tail requires a non-negative integer')
-    } else if (a === '--help' || a === '-h') {
-      console.log('Usage: agent-hub watch [--once|--follow] [--sink console|file|webhook] [--file PATH] [--url URL] [--tail N]')
+    } else if (a === '--job') {
+      const v = args[++i]
+      if (!v) return usageError('--job requires a value')
+      jobIds.push(...v.split(',').map((x) => x.trim()).filter(Boolean))
+    } else if (a.startsWith('--job=')) {
+      jobIds.push(...a.slice('--job='.length).split(',').map((x) => x.trim()).filter(Boolean))
+    } else if (a === '--root') {
+      root = args[++i]
+      if (!root) return usageError('--root requires a value')
+    } else if (a.startsWith('--root=')) {
+      root = a.slice('--root='.length)
+      if (!root) return usageError('--root requires a value')
+    } else if (a === '--until-terminal') untilTerminal = true
+    else if (a === '--help' || a === '-h') {
+      console.log(USAGE)
       return true
     } else {
       return usageError(`unknown flag "${a}"`)
@@ -66,6 +106,33 @@ export async function runWatchCli(args, { env = process.env } = {}) {
     if (!['console', 'file', 'webhook'].includes(s)) return usageError(`unknown sink "${s}"`)
   }
   if (sinks.includes('webhook') && !url) return usageError('webhook sink requires --url')
+  const filtered = jobIds.length > 0 || root != null
+  if (untilTerminal && !filtered) return usageError('--until-terminal requires --job or --root')
+  if (untilTerminal && once) return usageError('--until-terminal cannot be combined with --once')
+
+  const matches = (event) => {
+    if (!filtered) return true
+    const id = event?.jobId ?? event?.record?.jobId ?? null
+    if (!id) return false
+    if (jobIds.includes(id)) return true
+    return root != null && rootOf(safeRead(id, env)) === root
+  }
+
+  // Truth comes from the job store, events are only the wake-up signal. A job
+  // whose record does not exist yet counts as pending.
+  const allTerminal = () => {
+    const targets = new Set(jobIds)
+    if (root != null) {
+      for (const job of listJobs(env)) {
+        if (rootOf(job) === root && job.jobId) targets.add(job.jobId)
+      }
+    }
+    if (targets.size === 0) return false
+    for (const id of targets) {
+      if (!TERMINAL_STATUSES.has(safeRead(id, env)?.status)) return false
+    }
+    return true
+  }
 
   const handlers = []
   if (sinks.includes('console')) handlers.push((e) => consoleAdapter(e))
@@ -73,7 +140,9 @@ export async function runWatchCli(args, { env = process.env } = {}) {
   if (sinks.includes('webhook')) handlers.push(createWebhookAdapter({ url }))
 
   let routed = 0
+  let handle = null
   const dispatch = async (event) => {
+    if (!matches(event)) return
     if (!routeEvent(event)) return
     routed++
     const kind = event?.kind
@@ -91,6 +160,7 @@ export async function runWatchCli(args, { env = process.env } = {}) {
       }
     }
     await Promise.all(handlers.map((h) => h(event)))
+    if (untilTerminal && handle && TERMINAL_KINDS.has(kind) && allTerminal()) handle.close()
   }
 
   if (once) {
@@ -104,8 +174,10 @@ export async function runWatchCli(args, { env = process.env } = {}) {
   if (tail != null && tail > 0) {
     for (const event of readTail({ n: tail, env })) await dispatch(event)
   }
-  const handle = watchEvents({ env, onEvent: dispatch })
+  handle = watchEvents({ env, onEvent: dispatch })
   console.error('[agent-hub] watch: following events.jsonl (Ctrl-C to stop)')
+  // Jobs that finished before we started produce no new event: check the store.
+  if (untilTerminal && allTerminal()) handle.close()
   const stop = () => {
     handle.close()
     console.error(`[agent-hub] watch: stopped after routing ${routed} event(s)`)

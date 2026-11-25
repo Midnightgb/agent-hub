@@ -46,3 +46,19 @@ test('malformed percent-encoding in an override path returns 400 and the server 
     assert.equal(after.status, 200)
   })
 })
+
+test('a request with a very large Cookie header (shared localhost cookies) is not rejected with 431', async () => {
+  await withServer(async (port) => {
+    const status = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'GET', path: '/api/config',
+        headers: { Host: `127.0.0.1:${port}`, Cookie: `a=${'x'.repeat(20000)}` } }, (res) => {
+        res.resume()
+        res.on('end', () => resolve(res.statusCode))
+      })
+      req.on('error', reject)
+      req.end()
+    })
+    assert.notEqual(status, 431)
+    assert.equal(status, 200)
+  })
+})

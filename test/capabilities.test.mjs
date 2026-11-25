@@ -49,7 +49,7 @@ test('capabilitiesFor: claude has sessionResume false because the hub has no cla
 })
 
 test('web is false for every agent in the AGENT_CAPABILITIES table', () => {
-  const knownAgents = ['agy', 'opencode', 'codex', 'copilot', 'claude', 'jules']
+  const knownAgents = ['agy', 'opencode', 'codex', 'gentle-shell', 'copilot', 'claude', 'jules']
   for (const agent of knownAgents) {
     const caps = capabilitiesFor(agent, 'some-model')
     assert.equal(caps.web, false, `agent ${agent} should have web: false`)

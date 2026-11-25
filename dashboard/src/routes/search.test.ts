@@ -25,7 +25,13 @@ describe("AgentsSearch", () => {
 
 describe("HistorySearch", () => {
   it("defaults every field", () => {
-    expect(HistorySearch.parse({})).toEqual({ status: "all", agent: "", q: "" })
+    expect(HistorySearch.parse({})).toEqual({ status: "all", agent: "", q: "", page: 1, pageSize: 10 })
+  })
+
+  it("reads page and pageSize from the URL and falls back on invalid values", () => {
+    expect(HistorySearch.parse({ page: "3", pageSize: "25" })).toMatchObject({ page: 3, pageSize: 25 })
+    expect(HistorySearch.parse({ page: 0, pageSize: 7 })).toMatchObject({ page: 1, pageSize: 10 })
+    expect(HistorySearch.parse({ page: "x", pageSize: "x" })).toMatchObject({ page: 1, pageSize: 10 })
   })
 
   it("falls back on an invalid status", () => {

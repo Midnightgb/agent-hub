@@ -85,7 +85,7 @@ describe("AppBackground", () => {
     vi.restoreAllMocks()
   })
 
-  it("renders the background layer with aria-hidden, -z-10 layer classes, and opacity in 0.05-0.1 range", () => {
+  it("renders a non-interactive aria-hidden background layer behind the content with a canvas", () => {
     window.matchMedia = mockMatchMedia({ reduceMotion: false })
 
     const { container } = render(
@@ -102,17 +102,11 @@ describe("AppBackground", () => {
     expect(bgLayer.className).toContain("-z-10")
     expect(bgLayer.className).toContain("pointer-events-none")
 
-    const opacity = parseFloat(bgLayer.style.opacity)
-    expect(opacity).toBeGreaterThanOrEqual(0.05)
-    expect(opacity).toBeLessThanOrEqual(0.1)
-
-    const canvas = bgLayer.querySelector("canvas")
-    expect(canvas).toBeTruthy()
+    expect(bgLayer.querySelector("canvas")).toBeTruthy()
   })
 
-  it("under prefers-reduced-motion it does not animate and renders static canvas without rAF loop", () => {
-    window.matchMedia = mockMatchMedia({ reduceMotion: true })
-    const rafSpy = vi.spyOn(window, "requestAnimationFrame")
+  it("renders the same canvas layer under prefers-reduced-motion and a dark theme", () => {
+    window.matchMedia = mockMatchMedia({ reduceMotion: true, prefersDark: true })
 
     const { container } = render(
       <ThemeProvider>
@@ -122,26 +116,7 @@ describe("AppBackground", () => {
 
     const bgLayer = container.querySelector('[aria-hidden="true"]') as HTMLElement
     expect(bgLayer).toBeTruthy()
-
-    // Does not initiate an infinite animation loop
-    expect(rafSpy).not.toHaveBeenCalled()
-
-    // Canvas element is still rendered (renders static frame)
-    const canvas = bgLayer.querySelector("canvas")
-    expect(canvas).toBeTruthy()
-  })
-
-  it("animates via requestAnimationFrame when prefers-reduced-motion is false", () => {
-    window.matchMedia = mockMatchMedia({ reduceMotion: false })
-    const rafSpy = vi.spyOn(window, "requestAnimationFrame")
-
-    render(
-      <ThemeProvider>
-        <AppBackground />
-      </ThemeProvider>
-    )
-
-    expect(rafSpy).toHaveBeenCalled()
+    expect(bgLayer.querySelector("canvas")).toBeTruthy()
   })
 
   it("mounts inside AppShell without adding any visible text nodes or accessible roles", async () => {

@@ -30,6 +30,8 @@ export const AGENT_CAPABILITIES = Object.freeze({
   opencode: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false, browser: false }),
   // codex: sessionResume via 'exec resume'; local git repo checkout; no github CLI or web signal
   codex: Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false, browser: false }),
+  // gentle-shell: sessionResume via '--fork <session>' (pi); local git repo checkout; no github CLI or web signal
+  'gentle-shell': Object.freeze({ read: true, write: true, git: true, github: false, web: false, sessionResume: true, largeContext: false, messagingTurnBoundary: true, messagingMidRun: false, browser: false }),
   // copilot: built-in GitHub access; no session resume support
   copilot: Object.freeze({ read: true, write: true, git: true, github: true, web: false, sessionResume: false, largeContext: false, messagingTurnBoundary: false, messagingMidRun: false, browser: false }),
   // claude: no hub CLI adapter (tiers are host-only routing hints), so the hub cannot resume a host-run

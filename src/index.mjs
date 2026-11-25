@@ -52,7 +52,7 @@ import {
 } from './schemas.mjs'
 
 const VERSION = '2.1.0'
-const TESTED_VERSIONS = { agy: '1.2.1', opencode: '2.0.18', copilot: '1.0.31', codex: '0.154.0' }
+const TESTED_VERSIONS = { agy: '1.2.1', opencode: '2.0.18', copilot: '1.0.31', codex: '0.154.0', 'gentle-shell': '4.5.1' }
 
 const log = (...args) => console.error('[agent-hub]', ...args)
 
@@ -144,7 +144,7 @@ const guard = (handler, wrap = (payload) => payload) => async (args, extra) => {
   }
 }
 
-const agentEnum = z.enum(['agy', 'opencode', 'copilot', 'codex'])
+const agentEnum = z.enum(['agy', 'opencode', 'copilot', 'codex', 'gentle-shell'])
 const modeEnum = z.enum(['read', 'write'])
 // same-tree-fanout (S5): structured review output; see src/review-output.mjs.
 const outputArg = z
@@ -444,7 +444,7 @@ export function buildServer() {
         mode: modeEnum.optional().default('read'),
         timeoutS: z.number().int().positive().optional(),
         title: z.string().optional(),
-        variant: z.string().optional().describe('opencode reasoning effort (minimal/low/medium/high/max); ignored by agy/copilot.'),
+        variant: z.string().optional().describe('opencode reasoning effort (minimal/low/medium/high/max), or gentle-shell thinking level (--thinking); ignored by agy/copilot.'),
         taskType: taskTypeArg,
         profile: z.string().optional().describe(
           'agys account to run an agy job on; omit for automatic quota/load-balanced selection. Only meaningful for agent "agy"; rejected for any other agent.'
@@ -642,7 +642,7 @@ export function buildServer() {
         'task_status. Only agy, opencode and codex (errorKind:"unsupported_agent" otherwise); for Jules use ' +
         'jules_delegate + jules_interact. Write mode requires cwd to be a secondary `git worktree add` checkout.',
       inputSchema: {
-        agent: z.enum(['agy', 'opencode', 'codex']),
+        agent: z.enum(['agy', 'opencode', 'codex', 'gentle-shell']),
         model: z.string().min(1),
         title: z.string().min(1).describe('Short human-readable name of the task.'),
         task: z.string().min(1).describe('The task brief; also stored as the assignment brief.'),
@@ -650,7 +650,7 @@ export function buildServer() {
         cwd: z.string().min(1),
         mode: modeEnum.optional().default('read'),
         timeoutS: z.number().int().positive().optional(),
-        variant: z.string().optional().describe('opencode reasoning effort (minimal/low/medium/high/max); ignored by agy.'),
+        variant: z.string().optional().describe('opencode reasoning effort (minimal/low/medium/high/max), or gentle-shell thinking level (--thinking); ignored by agy.'),
         taskType: taskTypeArg,
       },
       outputSchema: TaskTurnResponse,
@@ -1265,6 +1265,7 @@ async function selftest() {
   checkCliVersion('opencode', 'opencode')
   checkCliVersion('copilot', 'copilot')
   checkCliVersion('codex', 'codex')
+  checkCliVersion('gentle-shell', 'gentle-shell')
 
   console.log('\nSelftest passed.')
 }

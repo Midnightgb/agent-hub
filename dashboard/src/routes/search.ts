@@ -12,10 +12,18 @@ export const AgentsSearch = z.object({
 })
 export type AgentsSearchT = z.infer<typeof AgentsSearch>
 
+export const HISTORY_PAGE_SIZES = [10, 25, 50, 100] as const
+
 export const HistorySearch = z.object({
   status: z.enum(["all", "failed", "succeeded", "canceled"]).catch("all"),
   agent: z.string().catch(""),
   q: z.string().catch(""),
+  page: z.coerce.number().int().min(1).catch(1),
+  pageSize: z.coerce
+    .number()
+    .int()
+    .refine((size) => (HISTORY_PAGE_SIZES as readonly number[]).includes(size))
+    .catch(HISTORY_PAGE_SIZES[0]),
 })
 export type HistorySearchT = z.infer<typeof HistorySearch>
 

@@ -245,3 +245,18 @@ test('JobRecord accepts a remote job with no local cwd', () => {
   assert.equal(JobRecord.safeParse(record).success, true)
   assert.equal(JobRecord.safeParse({ ...record, cwd: null }).success, true)
 })
+
+test('a token breakdown object in a stored event or job is read as its total, so /api/state still validates', () => {
+  // Shape a gentle-shell job.finished event was written with before the
+  // adapter reported a number: input already includes cachedInput, output
+  // already includes reasoning.
+  const breakdown = { input: 69939, cachedInput: 0, output: 44, reasoning: 0 }
+  const event = { ts: '2026-11-02T00:20:20.561Z', source: 'hub', kind: 'job.finished', agent: 'gentle-shell', tokens: breakdown }
+  assert.equal(HubEvent.parse(event).tokens, 69983)
+  assert.equal(HubEvent.parse({ ...event, tokens: 12 }).tokens, 12)
+  assert.equal(HubEvent.parse({ ...event, tokens: null }).tokens, null)
+  assert.throws(() => HubEvent.parse({ ...event, tokens: 'many' }))
+
+  const state = { agents: [], jobs: [], subagents: [], events: [event] }
+  assert.equal(StateResponse.parse(state).events[0].tokens, 69983)
+})

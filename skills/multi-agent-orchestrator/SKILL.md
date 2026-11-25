@@ -329,7 +329,7 @@ Claude Code subagents:
 - **Isolation is automatic** (`isolation:'auto'`):
   - agy runs in a hub-managed scratch copy of your tree (uncommitted and untracked files
     included, removed after the job).
-  - copilot/codex/opencode run in place, because their CLIs enforce read-only.
+  - copilot/codex/opencode/gentle-shell run in place, because their CLIs enforce read-only.
   - If the tree changes during the run, the job still succeeds and reports
     `readGuard.level:'warn'` with the changed paths. Usually that is your own edit or a sibling
     job's, but the guard cannot tell who wrote it: check any path you did not touch.

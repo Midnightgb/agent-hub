@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { paths } from './config.mjs'
+import { appendEvent } from './eventlog.mjs'
 import { updateJsonLocked } from './fsutil.mjs'
 import { getDb, upsertJob, getJob, listJobIds } from './storage/index.mjs'
 
@@ -505,6 +506,16 @@ export function reconcileOrphans(env = process.env) {
     if (job.pid && isPidAlive(job.pid)) continue
     updateResult(job.jobId, { status: 'failed', errorKind: 'orphaned', error: 'process not found on startup reconcile' }, env)
     changed.push(job.jobId)
+    // Orphans never reach finishJob, so without this a watcher would wait on
+    // them forever. Best-effort: an event-log failure must not break startup.
+    try {
+      appendEvent(
+        { kind: 'job.failed', agent: job.agent, model: job.model, cwd: job.cwd, title: job.title, jobId: job.jobId, errorKind: 'orphaned' },
+        { env }
+      )
+    } catch {
+      // ignore
+    }
   }
   return changed
 }

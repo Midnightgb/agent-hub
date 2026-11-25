@@ -7,7 +7,7 @@ export function getProvider(agent, model) {
     return 'copilot'
   } else if (agent === 'codex') {
     return 'codex'
-  } else if (agent === 'opencode' && model.startsWith('opencode-go/')) {
+  } else if ((agent === 'opencode' || agent === 'gentle-shell') && model.startsWith('opencode-go/')) {
     return 'opencodego'
   } else if (agent === 'claude' && ['haiku', 'sonnet', 'opus'].includes(model)) {
     return 'claude'

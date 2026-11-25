@@ -52,7 +52,7 @@ import {
 // Local agents whose CLI can resume a native session (see REPLYABLE_AGENTS in
 // ./jobs.mjs). Jules is replyable too, but its remote session already gives
 // multi-turn through jules_interact, so it is not assignable here.
-export const ASSIGNABLE_AGENTS = Object.freeze(['agy', 'opencode', 'codex'])
+export const ASSIGNABLE_AGENTS = Object.freeze(['agy', 'opencode', 'codex', 'gentle-shell'])
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
 

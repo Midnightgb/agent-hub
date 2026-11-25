@@ -51,6 +51,17 @@ export const LEARNING_TEXT_MAX = 300
 
 const nullableString = z.string().nullable().optional()
 const nullableNumber = z.number().nullable().optional()
+// `tokens` is a number. A {input, output, ...} breakdown (codex's adapter shape,
+// and gentle-shell events written before its adapter reported a number) is
+// read as input + output — input already holds cached input and output
+// already holds reasoning — so one stored record never fails /api/state.
+const tokenCount = z.preprocess(
+  (value) =>
+    value && typeof value === 'object' && !Array.isArray(value) && (typeof value.input === 'number' || typeof value.output === 'number')
+      ? (value.input ?? 0) + (value.output ?? 0)
+      : value,
+  nullableNumber
+)
 
 export const TaskType = z.enum(TASK_TYPES)
 export const JobStatus = z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled'])
@@ -215,7 +226,7 @@ export const JobRecord = z
     variant: nullableString,
     sessionId: nullableString,
     parentJobId: nullableString,
-    tokens: nullableNumber,
+    tokens: tokenCount,
     costUsd: nullableNumber,
     pid: nullableNumber,
     pgid: nullableNumber,
@@ -406,7 +417,7 @@ export const HubEvent = z
     cwd: nullableString,
     errorKind: nullableString,
     taskType: nullableString,
-    tokens: nullableNumber,
+    tokens: tokenCount,
     costUsd: nullableNumber,
     // Harness profile id + dispatch waitMode on job.* events (informational).
     harness: nullableString,
@@ -814,7 +825,7 @@ export const JobResultResponse = z
     tailTruncated: z.boolean().optional(),
     totalLines: z.number().int().nonnegative().optional(),
     fullPath: z.string(),
-    tokens: nullableNumber,
+    tokens: tokenCount,
     costUsd: nullableNumber,
     sessionId: nullableString,
     status: z.string(),

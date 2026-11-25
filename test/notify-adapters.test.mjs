@@ -42,8 +42,12 @@ test('routeEvent detects jules attention_required first (more specific than wait
   assert.equal(routeEvent({ record: { attentionRequired: true } }), 'jules.attention_required')
 })
 
+test('routeEvent routes job.canceled', () => {
+  assert.equal(routeEvent({ kind: 'job.canceled' }), 'job.canceled')
+})
+
 test('routeEvent ignores unlisted kinds and malformed input', () => {
-  for (const kind of ['job.queued', 'job.started', 'job.canceled', 'preflight', 'subagent.stop', 'proposal.created', 'learning.proposed', 'other']) {
+  for (const kind of ['job.queued', 'job.started', 'preflight', 'subagent.stop', 'proposal.created', 'learning.proposed', 'other']) {
     assert.equal(routeEvent({ kind }), null, kind)
   }
   assert.equal(routeEvent(null), null)

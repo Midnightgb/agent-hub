@@ -1,5 +1,5 @@
 import { agentsStatus as runAgentsStatus } from '../preflight.mjs'
-import { route as defaultRoute, DELEGATION_MAP, knownTaskTypes } from '../router.mjs'
+import { route as defaultRoute, DELEGATION_MAP, EXPLICIT_ONLY_PAIRS, knownTaskTypes } from '../router.mjs'
 import { MODEL_REGISTRY } from '../config.mjs'
 import { readDiscovery } from '../discovery.mjs'
 import { effectiveTier } from '../catalog.mjs'
@@ -14,8 +14,9 @@ import { expandChain } from '../model-policy.mjs'
 /**
  * The default set of agent+model pairs agents_status checks: every distinct
  * CLI pair (not Claude subagent tiers, which are not CLI-preflighted) named
- * anywhere in the delegation map. opencode pool steps (`@free`, `@go`) are
- * expanded to the models the policy allows (model-policy.mjs).
+ * anywhere in the delegation map, plus the explicit-only pairs. opencode pool
+ * steps (`@free`, `@go`) are expanded to the models the policy allows
+ * (model-policy.mjs).
  */
 export function defaultPairs({ env = process.env } = {}) {
   const seen = new Set()
@@ -33,6 +34,7 @@ export function defaultPairs({ env = process.env } = {}) {
       add(candidate.parallelWith)
     }
   }
+  for (const pair of EXPLICIT_ONLY_PAIRS) add(pair)
   return pairs
 }
 

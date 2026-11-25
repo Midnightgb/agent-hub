@@ -161,9 +161,10 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
 
 // job_reply supports resuming a conversation for these agents only: agy has
 // --conversation, opencode has -s/--session, codex has `exec resume <thread_id>`,
+// gentle-shell has pi's `--fork <session>`,
 // jules has sendMessage/approvePlan against its remote session. copilot has none
 // of these.
-const REPLYABLE_AGENTS = new Set(['agy', 'opencode', 'codex', 'jules'])
+const REPLYABLE_AGENTS = new Set(['agy', 'opencode', 'codex', 'gentle-shell', 'jules'])
 
 /**
  * job_reply for a jules parent: unlike agy/opencode, this never spawns a new

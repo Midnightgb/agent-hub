@@ -357,7 +357,7 @@ describe('task_assign', () => {
       assert.match(res.error, /jules_interact/)
     }
     assert.equal(calls.length, 0)
-    assert.deepEqual([...ASSIGNABLE_AGENTS].sort(), ['agy', 'codex', 'opencode'])
+    assert.deepEqual([...ASSIGNABLE_AGENTS].sort(), ['agy', 'codex', 'gentle-shell', 'opencode'])
   })
 
   test('rejects an unknown taskType before creating an assignment', async () => {
