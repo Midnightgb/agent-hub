@@ -99,7 +99,7 @@ The choice is stored in `$AGENT_HUB_HOME/model-policy.json` and survives reinsta
 - `route()` expands a pool to the allowed models the live catalog lists, in the order set in
   the dashboard (at most 2 per pool). A pool with nothing allowed is reported in `skipped` as
   `pool_empty` and the chain falls through to the next agent.
-- Pools per task type: `recon`, `research`, `triage` → `@free`; `call-chain-trace` → `@go`
+- Pools per task type: `recon`, `research`, `triage` → `@free`; `call-chain-trace` → `@free` then `@go`
   then `@free`; `mechanical-edit` (write) → `@go`.
 - Any job on an opencode model the policy does not allow is rejected before launch with an
   error whose `code` is `model_blocked` (delegate, plans, assignments, replies). A

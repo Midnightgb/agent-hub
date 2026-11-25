@@ -179,7 +179,7 @@ files, you paid two quotas for one answer. Delegate when the answer is a *locati
 | taskType | Primary | Fallback(s) | Why |
 |---|---|---|---|
 | `recon` | agy `gemini-3.8-flash-low` | opencode `@free` → Claude `haiku` | proven context compression, cheap refreshable quota |
-| `call-chain-trace` | agy `gemini-3.8-flash-high` | opencode `@go` → opencode `@free` → Claude `sonnet` | needs multi-hop reasoning, 1M ctx |
+| `call-chain-trace` | agy `gemini-3.8-flash-high` | opencode `@free` → opencode `@go` → Claude `sonnet` | needs multi-hop reasoning, 1M ctx |
 | `research` | opencode `@free` (up to 2 models) | agy `gemini-3.8-flash-medium` | zero cost, 1M ctx |
 | `triage` | opencode `@free` | copilot `auto` | lowest latency |
 | `second-opinion` | agy `gemini-3.8-flash-high` | copilot `auto` | different model lineage than Claude Code |
